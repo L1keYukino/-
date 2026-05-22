@@ -1,0 +1,58 @@
+{
+  "audio": {
+    "backend": "portaudio",
+    "device_id": "",
+    "sample_rate": 16000,
+    "channels": 1,
+    "frame_duration_ms": 30,
+    "ring_buffer_size_ms": 2000
+  },
+  "asr_primary": {
+    "type": "sherpa_onnx",
+    "model_dir": "./models/sensevoice",
+    "enable_vad": true,
+    "vad_silence_timeout_s": 0.8,
+    "vad_speech_timeout_s": 30.0
+  },
+  "asr_fallback": {
+    "type": "iflytek",
+    "app_id": "",
+    "api_key": "",
+    "api_secret": "",
+    "enabled": false
+  },
+  "llm_primary": {
+    "type": "llama_cpp",
+    "model_path": "./models/qwen2.5-3b-q4_k_m.gguf",
+    "n_ctx": 2048,
+    "n_threads": 4,
+    "n_gpu_layers": 0,
+    "temperature": 0.1,
+    "max_tokens": 512
+  },
+  "llm_fallback": {
+    "type": "none",
+    "api_key": "",
+    "model": "gpt-4o-mini",
+    "endpoint_url": "https://api.openai.com/v1",
+    "enabled": false
+  },
+  "output": {
+    "type": "sendinput",
+    "typing_delay_ms": 10,
+    "use_unicode_fallback": true
+  },
+  "mode": {
+    "type": "ptt",
+    "ptt_hotkey": {
+      "modifiers": 3,
+      "virtual_key": 86
+    },
+    "continuous_vad_silence_ms": 800,
+    "continuous_max_segment_ms": 30000
+  },
+  "default_intent": "general",
+  "enabled_intents": ["general", "email", "chat", "code_comment", "documentation", "command"],
+  "max_context_turns": 5,
+  "enable_error_correction": true
+}
