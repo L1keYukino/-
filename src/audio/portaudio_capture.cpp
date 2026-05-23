@@ -2,14 +2,8 @@
 #include <cstdio>
 #include <stdexcept>
 
-// PortAudio is linked at build time. The header path depends on how it was installed.
-// For FetchContent builds: <portaudio.h>
-// For system installs:     <portaudio.h>
-#if __has_include(<portaudio.h>)
+#ifdef VIM_HAS_PORTAUDIO
   #include <portaudio.h>
-  #define VIM_HAS_PORTAUDIO 1
-#else
-  #define VIM_HAS_PORTAUDIO 0
 #endif
 
 namespace vim {
@@ -17,7 +11,7 @@ namespace vim {
 // ─── PIMPL ──────────────────────────────────────────────
 
 struct PortAudioCapture::Impl {
-#if VIM_HAS_PORTAUDIO
+#ifdef VIM_HAS_PORTAUDIO
     PaStream* stream = nullptr;
 #endif
 };
@@ -38,7 +32,7 @@ PortAudioCapture::~PortAudioCapture() {
 
 std::vector<AudioDeviceInfo> PortAudioCapture::enumerate_devices() {
     std::vector<AudioDeviceInfo> result;
-#if VIM_HAS_PORTAUDIO
+#ifdef VIM_HAS_PORTAUDIO
     Pa_Initialize();
     int n = Pa_GetDeviceCount();
     for (int i = 0; i < n; ++i) {
@@ -72,7 +66,7 @@ bool PortAudioCapture::select_device(const std::string& device_id) {
 
 // ─── PortAudio callback ─────────────────────────────────
 
-#if VIM_HAS_PORTAUDIO
+#ifdef VIM_HAS_PORTAUDIO
 static int pa_callback(const void* input, void* /*output*/,
                        unsigned long frame_count,
                        const PaStreamCallbackTimeInfo* /*time*/,
@@ -103,7 +97,7 @@ bool PortAudioCapture::start(int sample_rate, int channels,
     user_callback_ = callback;
     user_data_ = user_data;
 
-#if VIM_HAS_PORTAUDIO
+#ifdef VIM_HAS_PORTAUDIO
     PaError err = Pa_Initialize();
     if (err != paNoError) {
         std::fprintf(stderr, "[PortAudio] Pa_Initialize failed: %s\n", Pa_GetErrorText(err));
@@ -145,7 +139,7 @@ bool PortAudioCapture::start(int sample_rate, int channels,
 void PortAudioCapture::stop() {
     if (!running_.exchange(false)) return;
 
-#if VIM_HAS_PORTAUDIO
+#ifdef VIM_HAS_PORTAUDIO
     if (impl_->stream) {
         Pa_StopStream(impl_->stream);
         Pa_CloseStream(impl_->stream);

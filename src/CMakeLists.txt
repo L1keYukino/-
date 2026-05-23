@@ -18,10 +18,49 @@ target_link_libraries(voice_input_method
         spdlog::spdlog
 )
 
-# PortAudio — conditionally linked
-if(VIM_USE_PORTAUDIO AND TARGET PortAudio)
-    target_link_libraries(voice_input_method PRIVATE PortAudio)
-    target_compile_definitions(voice_input_method PRIVATE VIM_HAS_PORTAUDIO=1)
+# PortAudio — compiled directly from local clone in models/portaudio
+set(PORTAUDIO_DIR "${CMAKE_SOURCE_DIR}/models/portaudio")
+if(VIM_USE_PORTAUDIO AND EXISTS "${PORTAUDIO_DIR}/include/portaudio.h")
+    file(GLOB PA_COMMON "${PORTAUDIO_DIR}/src/common/*.c")
+    file(GLOB PA_WIN   "${PORTAUDIO_DIR}/src/os/win/*.c")
+
+    target_include_directories(voice_input_method PRIVATE
+        "${PORTAUDIO_DIR}/include"
+        "${PORTAUDIO_DIR}/src/common"
+        "${PORTAUDIO_DIR}/src/os/win"
+        "${PORTAUDIO_DIR}/src/hostapi/wasapi"
+        "${PORTAUDIO_DIR}/src/hostapi/wdmks"
+        "${PORTAUDIO_DIR}/src/hostapi/dsound"
+        "${PORTAUDIO_DIR}/src/hostapi/wmme"
+    )
+
+    target_sources(voice_input_method PRIVATE
+        ${PA_COMMON}
+        ${PA_WIN}
+        "${PORTAUDIO_DIR}/src/hostapi/wasapi/pa_win_wasapi.c"
+        "${PORTAUDIO_DIR}/src/hostapi/wdmks/pa_win_wdmks.c"
+        "${PORTAUDIO_DIR}/src/hostapi/dsound/pa_win_ds.c"
+        "${PORTAUDIO_DIR}/src/hostapi/dsound/pa_win_ds_dynlink.c"
+        "${PORTAUDIO_DIR}/src/hostapi/wmme/pa_win_wmme.c"
+    )
+
+    target_compile_definitions(voice_input_method PRIVATE
+        VIM_HAS_PORTAUDIO=1
+        PA_USE_WASAPI=1
+        PA_USE_WDMKS=1
+        PA_USE_DS=1
+        PA_USE_WMME=1
+    )
+
+    # PortAudio needs these Windows libs
+    if(WIN32)
+        target_link_libraries(voice_input_method PRIVATE
+            winmm ole32 uuid ksuser setupapi)
+    endif()
+
+    message(STATUS "PortAudio: compiled directly from models/portaudio")
+else()
+    message(STATUS "PortAudio: not found — audio stub mode")
 endif()
 
 # sherpa-onnx — conditionally linked (MinGW links directly against DLL)
