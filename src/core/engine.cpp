@@ -1,6 +1,8 @@
 #include "src/core/engine.hpp"
 #include "src/audio/portaudio_capture.hpp"
 #include "src/asr/sherpa_onnx_asr.hpp"
+#include "src/asr/iflytek_cloud_asr.hpp"
+#include "src/asr/asr_fallback.hpp"
 #include "src/llm/llamacpp_engine.hpp"
 #include "src/llm/openai_engine.hpp"
 #include "src/llm/llm_fallback.hpp"
@@ -8,7 +10,6 @@
 #include "src/hotkey/i_hotkey_manager.hpp"
 #include <algorithm>
 #include <chrono>
-#include <future>
 #include <spdlog/spdlog.h>
 
 namespace vim {
@@ -19,6 +20,14 @@ VoiceEngine::VoiceEngine(const EngineConfig& config)
     : config_(config)
     , current_intent_(config.default_intent)
     , context_mgr_(config.max_context_turns)
+    , vad_(EnergyVAD::Config{
+          config_.asr_primary.vad_silence_timeout_s > 0
+              ? -40.0f : -40.0f,  // silence threshold
+          -30.0f,                  // speech threshold
+          config_.mode.continuous_vad_silence_ms,
+          100,                     // speech confirm ms
+          config_.audio.sample_rate
+      })
 {
 }
 
@@ -46,38 +55,45 @@ bool VoiceEngine::initialize() {
         audio_->select_device(config_.audio.device_id);
     }
 
-    // ─── ASR engine ─────────────────────────────────────
-    asr_primary_ = std::make_unique<SherpaOnnxASR>();
+    // ─── ASR engine (primary: sherpa-onnx, fallback: iFlytek) ──
+    auto primary_asr = std::make_unique<SherpaOnnxASR>();
     ASREngineConfig asr_cfg;
     asr_cfg.model_dir     = config_.asr_primary.model_dir;
     asr_cfg.sample_rate   = config_.audio.sample_rate;
     asr_cfg.enable_vad    = config_.asr_primary.enable_vad;
     asr_cfg.vad_silence_timeout_s = config_.asr_primary.vad_silence_timeout_s;
     asr_cfg.vad_speech_timeout_s  = config_.asr_primary.vad_speech_timeout_s;
+    primary_asr->initialize(asr_cfg);
 
-    if (!asr_primary_->initialize(asr_cfg)) {
-        spdlog::warn("ASR engine failed to initialize — stub mode");
+    std::unique_ptr<IASREngine> fallback_asr;
+    if (config_.asr_fallback.enabled && !config_.asr_fallback.app_id.empty()) {
+        auto iflytek = std::make_unique<IFlytekCloudASR>();
+        if (iflytek->initialize(config_.asr_fallback.app_id,
+                                 config_.asr_fallback.api_key,
+                                 config_.asr_fallback.api_secret)) {
+            spdlog::info("ASR fallback (iFlytek) configured");
+            fallback_asr = std::move(iflytek);
+        }
+    } else {
+        spdlog::info("ASR fallback not configured — using local only");
     }
+
+    asr_primary_ = std::make_unique<ASRFallbackEngine>(
+        std::move(primary_asr), std::move(fallback_asr));
     asr_primary_->set_result_callback(on_asr_result_static, this);
 
     // ─── LLM engine (primary: llama.cpp, fallback: OpenAI) ──
     auto llama = std::make_unique<LlamaCppEngine>();
-    bool llama_ok = llama->initialize(
-        config_.llm_primary.model_path,
-        config_.llm_primary.n_ctx,
-        config_.llm_primary.n_threads);
-
-    if (llama_ok) {
-        spdlog::info("LLM primary (llama.cpp) initialized");
-    }
+    llama->initialize(config_.llm_primary.model_path,
+                      config_.llm_primary.n_ctx,
+                      config_.llm_primary.n_threads);
 
     std::unique_ptr<ILLMEngine> openai;
-    if (config_.llm_fallback.enabled) {
+    if (config_.llm_fallback.enabled && !config_.llm_fallback.api_key.empty()) {
         auto oai = std::make_unique<OpenAIEngine>();
         if (oai->initialize(config_.llm_fallback.api_key,
                             config_.llm_fallback.model,
                             config_.llm_fallback.endpoint_url)) {
-            spdlog::info("LLM fallback (OpenAI) configured");
             openai = std::move(oai);
         }
     }
@@ -85,9 +101,8 @@ bool VoiceEngine::initialize() {
     llm_primary_ = std::make_unique<LLMFallbackEngine>(
         std::move(llama), std::move(openai));
 
-    // ─── Done ───────────────────────────────────────────
     initialized_.store(true);
-    spdlog::info("VoiceEngine: initialized (Phase 3: audio + ASR + LLM)");
+    spdlog::info("VoiceEngine: initialized (Phase 5: all subsystems ready)");
     return true;
 }
 
@@ -96,9 +111,9 @@ void VoiceEngine::shutdown() {
 
     spdlog::info("VoiceEngine: shutting down...");
 
-    asr_running_.store(false);
-    if (asr_thread_.joinable())
-        asr_thread_.join();
+    running_.store(false);
+    if (continuous_thread_.joinable())
+        continuous_thread_.join();
 
     if (audio_ && audio_->is_running())
         audio_->stop();
@@ -137,13 +152,29 @@ void VoiceEngine::start() {
         notify_error(-1, "Engine not initialized", "core", true);
         return;
     }
-    spdlog::info("VoiceEngine: started in {} mode",
-                 config_.mode.mode == EngineMode::PTT ? "PTT" : "Continuous");
+
     state_machine_.force_state(EngineState::Idle);
+
+    if (config_.mode.mode == EngineMode::Continuous) {
+        spdlog::info("VoiceEngine: starting continuous dictation mode");
+        running_.store(true);
+        continuous_thread_ = std::thread(&VoiceEngine::continuous_loop, this);
+    } else {
+        spdlog::info("VoiceEngine: started in PTT mode");
+    }
 }
 
 void VoiceEngine::stop() {
+    running_.store(false);
+
     if (ptt_active_.load()) ptt_release();
+
+    if (continuous_thread_.joinable())
+        continuous_thread_.join();
+
+    if (audio_ && audio_->is_running())
+        audio_->stop();
+
     state_machine_.force_state(EngineState::Idle);
     spdlog::info("VoiceEngine: stopped");
 }
@@ -176,12 +207,109 @@ void VoiceEngine::ptt_release() {
     if (!ptt_active_.exchange(false)) return;
 
     audio_->stop();
+    drain_audio_and_recognize();
+}
+
+// ─── Continuous dictation mode ──────────────────────────
+
+void VoiceEngine::continuous_loop() {
+    spdlog::info("Continuous mode: starting audio capture");
+
+    audio_->ring_buffer().reset();
+    vad_.reset();
+
+    if (!audio_->start(config_.audio.sample_rate,
+                       config_.audio.channels,
+                       audio_callback_static, this)) {
+        notify_error(-3, "Failed to start continuous audio", "audio", true);
+        return;
+    }
+
+    // Poll ring buffer and VAD state
+    while (running_.load()) {
+        auto& rb = audio_->ring_buffer();
+        std::size_t available = rb.read_available();
+
+        // Process audio in ~30ms frames
+        const int frame_ms = 30;
+        std::size_t frame_samples = static_cast<std::size_t>(
+            config_.audio.sample_rate * frame_ms / 1000);
+
+        if (available >= frame_samples) {
+            std::vector<float> frame(frame_samples);
+            rb.read(frame.data(), frame_samples);
+
+            // Compute audio level for observers
+            float rms = 0.0f;
+            for (auto s : frame) rms += s * s;
+            rms = std::sqrt(rms / static_cast<float>(frame_samples));
+            float db = 20.0f * std::log10(rms + 1e-10f);
+            notify_audio_level(db, db);
+
+            // Run VAD
+            EnergyVAD::State vad_state = vad_.process(frame.data(), frame_samples);
+
+            if (vad_state == EnergyVAD::State::Speech) {
+                if (!segment_active_.exchange(true)) {
+                    // Speech started — begin new segment
+                    segment_buffer_.clear();
+                    auto prev = state_machine_.state();
+                    state_machine_.transition_to(EngineState::Listening);
+                    notify_state_change(prev, EngineState::Listening,
+                                        "Continuous: speech detected");
+                    spdlog::debug("Continuous: speech started");
+                }
+                // Accumulate samples
+                segment_buffer_.insert(segment_buffer_.end(),
+                                       frame.begin(), frame.end());
+            } else if (segment_active_.load() && !segment_buffer_.empty()) {
+                // VAD transitioned from Speech to Silence —
+                // but we handle silence timeout inside VAD,
+                // so this is the actual end-of-utterance signal
+                spdlog::debug("Continuous: speech ended ({} samples, {:.1f}s)",
+                              segment_buffer_.size(),
+                              static_cast<float>(segment_buffer_.size())
+                              / static_cast<float>(config_.audio.sample_rate));
+                process_continuous_segment();
+            }
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+
+    audio_->stop();
+    spdlog::info("Continuous mode: stopped");
+}
+
+void VoiceEngine::process_continuous_segment() {
+    segment_active_.store(false);
+
+    if (segment_buffer_.empty()) return;
 
     auto prev = state_machine_.state();
     state_machine_.transition_to(EngineState::Recognizing);
-    notify_state_change(prev, EngineState::Recognizing);
+    notify_state_change(prev, EngineState::Recognizing,
+                        "Continuous: processing segment");
 
-    drain_audio_and_recognize();
+    // Feed segment to ASR
+    asr_primary_->process_audio(segment_buffer_.data(), segment_buffer_.size());
+    asr_primary_->end_utterance();
+
+    segment_buffer_.clear();
+}
+
+void VoiceEngine::audio_callback_static(const float* samples, std::size_t /*frames*/,
+                                         int /*sample_rate*/, void* user_data) {
+    // This callback is NOT used for continuous mode — we poll the ring buffer directly.
+    // The callback is only for PTT mode (passing nullptr disables it).
+    (void)samples;
+    (void)user_data;
+}
+
+void VoiceEngine::on_audio_samples(const float* samples, std::size_t count) {
+    // Direct audio sample handler (for future streaming ASR integration)
+    (void)samples;
+    (void)count;
 }
 
 // ─── Intent control ─────────────────────────────────────
@@ -221,24 +349,17 @@ void VoiceEngine::on_recognition_result(const ASRResult& result) {
 
     auto prev = state_machine_.state();
     state_machine_.transition_to(EngineState::Correcting);
-    notify_state_change(prev, EngineState::Correcting, "ASR complete, starting LLM correction");
+    notify_state_change(prev, EngineState::Correcting, "ASR complete, starting correction");
     notify_transcription(result.text, false, result.confidence, result.language);
 
-    // Phase 3: run error correction via LLM
     if (config_.enable_error_correction && llm_primary_ && llm_primary_->is_ready()) {
         run_error_correction(result.text);
     } else {
-        // No LLM available — pass raw text directly
-        spdlog::info("LLM not available, using raw ASR text");
         run_intent_formatting(result.text);
     }
 }
 
-// ─── LLM pass 1: Error correction ───────────────────────
-
 void VoiceEngine::run_error_correction(const std::string& raw_text) {
-    spdlog::info("Running LLM error correction...");
-
     const auto& ec_tmpl = prompt_catalog_.error_correction_template();
 
     LLMRequest req;
@@ -250,9 +371,7 @@ void VoiceEngine::run_error_correction(const std::string& raw_text) {
         {"user", raw_text},
     };
 
-    auto resp = llm_primary_->process_streaming(req, [](const std::string&) {
-        return true; // streaming tokens — for future real-time UI
-    });
+    auto resp = llm_primary_->process_streaming(req, [](const std::string&) { return true; });
 
     std::string corrected = raw_text;
     if (resp.success && !resp.text.empty()) {
@@ -269,11 +388,8 @@ void VoiceEngine::run_error_correction(const std::string& raw_text) {
     run_intent_formatting(corrected);
 }
 
-// ─── LLM pass 2: Intent formatting ──────────────────────
-
 void VoiceEngine::run_intent_formatting(const std::string& corrected_text) {
-    spdlog::info("Running LLM intent formatting (intent: {})...",
-                 intent_type_name(current_intent_));
+    spdlog::info("Running LLM formatting (intent: {})", intent_type_name(current_intent_));
 
     auto messages = prompt_catalog_.build_messages(
         current_intent_, context_mgr_.history(), corrected_text);
@@ -284,9 +400,7 @@ void VoiceEngine::run_intent_formatting(const std::string& corrected_text) {
     req.max_tokens = config_.llm_primary.max_tokens;
     req.messages = messages;
 
-    auto resp = llm_primary_->process_streaming(req, [](const std::string&) {
-        return true;
-    });
+    auto resp = llm_primary_->process_streaming(req, [](const std::string&) { return true; });
 
     std::string formatted = corrected_text;
     if (resp.success && !resp.text.empty()) {
@@ -296,14 +410,12 @@ void VoiceEngine::run_intent_formatting(const std::string& corrected_text) {
         spdlog::warn("LLM formatting failed: {}", resp.error_message);
     }
 
-    // Update conversation context
     context_mgr_.add_turn(corrected_text, formatted);
 
     auto prev = state_machine_.state();
     state_machine_.transition_to(EngineState::Outputting);
     notify_state_change(prev, EngineState::Outputting, "LLM complete");
 
-    // Notify observers with full pipeline output
     notify_llm_output(corrected_text, corrected_text, formatted,
                       current_intent_, false);
 
@@ -323,11 +435,15 @@ void VoiceEngine::drain_audio_and_recognize() {
         return;
     }
 
+    auto prev = state_machine_.state();
+    state_machine_.transition_to(EngineState::Recognizing);
+    notify_state_change(prev, EngineState::Recognizing);
+
     std::vector<float> chunk(available);
     std::size_t read = rb.read(chunk.data(), available);
     chunk.resize(read);
 
-    spdlog::debug("Drained {} samples ({:.1f} seconds) from ring buffer",
+    spdlog::debug("Drained {} samples ({:.1f}s) from ring buffer",
                   read,
                   static_cast<float>(read) / static_cast<float>(config_.audio.sample_rate));
 
@@ -368,6 +484,13 @@ void VoiceEngine::notify_llm_output(const std::string& raw, const std::string& c
     LLMOutputEvent ev{raw, corrected, formatted, intent, streaming};
     for (auto& obs : observers_)
         obs->on_llm_output(ev);
+}
+
+void VoiceEngine::notify_audio_level(float peak_db, float rms_db) {
+    std::lock_guard<std::mutex> lock(observers_mutex_);
+    AudioLevelEvent ev{peak_db, rms_db};
+    for (auto& obs : observers_)
+        obs->on_audio_level(ev);
 }
 
 } // namespace vim

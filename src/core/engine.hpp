@@ -10,6 +10,7 @@
 #include "src/llm/llm_types.hpp"
 #include "src/llm/context_manager.hpp"
 #include "src/llm/prompt_templates.hpp"
+#include "src/audio/vad.hpp"
 
 namespace vim {
 
@@ -20,6 +21,7 @@ class ITextOutput;
 class IHotkeyManager;
 class PortAudioCapture;
 class SherpaOnnxASR;
+class IFlytekCloudASR;
 class LlamaCppEngine;
 class OpenAIEngine;
 
@@ -66,6 +68,7 @@ private:
     void notify_error(int code, const std::string& msg, const std::string& component, bool recoverable);
     void notify_llm_output(const std::string& raw, const std::string& corrected,
                            const std::string& formatted, IntentType intent, bool streaming);
+    void notify_audio_level(float peak_db, float rms_db);
 
     // ─── Pipeline stages ────────────────────────────────
     static void on_asr_result_static(const struct ASRResult& result, void* user_data);
@@ -74,27 +77,41 @@ private:
     void run_error_correction(const std::string& raw_text);
     void run_intent_formatting(const std::string& corrected_text);
 
+    // ─── Continuous mode ────────────────────────────────
+    void continuous_loop();
+    void process_continuous_segment();
+
+    // ─── Audio callback (continuous mode) ───────────────
+    static void audio_callback_static(const float* samples, std::size_t frames,
+                                      int sample_rate, void* user_data);
+    void on_audio_samples(const float* samples, std::size_t count);
+
     // ─── Internal state ─────────────────────────────────
     EngineConfig        config_;
     EngineStateMachine  state_machine_;
     IntentType          current_intent_;
 
     std::unique_ptr<PortAudioCapture> audio_;
-    std::unique_ptr<SherpaOnnxASR>    asr_primary_;
-    std::unique_ptr<ILLMEngine>       llm_primary_;
+    std::unique_ptr<IASREngine>       asr_primary_;   // ASRFallbackEngine
+    std::unique_ptr<ILLMEngine>       llm_primary_;   // LLMFallbackEngine
     std::unique_ptr<ITextOutput>      output_;
     std::unique_ptr<IHotkeyManager>   hotkey_;
 
     PromptCatalog       prompt_catalog_;
     ContextManager      context_mgr_;
+    EnergyVAD           vad_;
+
+    // Segment buffer for continuous mode
+    std::vector<float>  segment_buffer_;
 
     std::mutex observers_mutex_;
     std::vector<ObserverPtr> observers_;
 
-    std::thread asr_thread_;
+    std::thread continuous_thread_;
     std::atomic<bool> initialized_{false};
     std::atomic<bool> ptt_active_{false};
-    std::atomic<bool> asr_running_{false};
+    std::atomic<bool> running_{false};
+    std::atomic<bool> segment_active_{false};
 };
 
 } // namespace vim
