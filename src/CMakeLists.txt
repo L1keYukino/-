@@ -24,6 +24,20 @@ if(VIM_USE_PORTAUDIO AND TARGET PortAudio)
     target_compile_definitions(voice_input_method PRIVATE VIM_HAS_PORTAUDIO=1)
 endif()
 
+# sherpa-onnx — conditionally linked (MinGW links directly against DLL)
+set(SHERPA_ONNX_DIR "${CMAKE_SOURCE_DIR}/models/sherpa-onnx")
+if(EXISTS "${SHERPA_ONNX_DIR}/include/sherpa-onnx/c-api/c-api.h")
+    target_include_directories(voice_input_method PRIVATE "${SHERPA_ONNX_DIR}/include")
+    # MinGW can link directly against the DLL to auto-generate import lib
+    target_link_libraries(voice_input_method PRIVATE
+        "${SHERPA_ONNX_DIR}/lib/sherpa-onnx-c-api.dll"
+    )
+    target_compile_definitions(voice_input_method PRIVATE VIM_HAS_SHERPA_ONNX=1)
+    message(STATUS "sherpa-onnx SDK found at ${SHERPA_ONNX_DIR}")
+else()
+    message(STATUS "sherpa-onnx SDK not found — ASR stub mode")
+endif()
+
 include("${CMAKE_SOURCE_DIR}/cmake/CompilerWarnings.cmake")
 set_project_warnings(voice_input_method)
 

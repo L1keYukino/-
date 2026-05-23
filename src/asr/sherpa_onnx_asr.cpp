@@ -1,10 +1,9 @@
 #include "src/asr/sherpa_onnx_asr.hpp"
 #include <algorithm>
-#include <cstdio>
-#include <cstring>
 #include <chrono>
+#include <cstring>
+#include <spdlog/spdlog.h>
 
-// sherpa-onnx C API — conditionally included
 #if __has_include("sherpa-onnx/c-api/c-api.h")
   #include "sherpa-onnx/c-api/c-api.h"
   #define VIM_HAS_SHERPA_ONNX 1
@@ -17,7 +16,7 @@ namespace vim {
 struct SherpaOnnxASR::Impl {
 #if VIM_HAS_SHERPA_ONNX
     const SherpaOnnxOfflineRecognizer* recognizer = nullptr;
-    const SherpaOnnxOfflineModelConfig* model_config = nullptr;
+    const SherpaOnnxOfflineStream* stream = nullptr;
 #endif
 };
 
@@ -27,47 +26,46 @@ SherpaOnnxASR::SherpaOnnxASR()
 }
 
 SherpaOnnxASR::~SherpaOnnxASR() {
-#if VIM_HAS_SHERPA_ONNX
-    if (impl_->recognizer) {
-        SherpaOnnxDestroyOfflineRecognizer(impl_->recognizer);
-    }
-#endif
+    reset();
 }
 
 bool SherpaOnnxASR::initialize(const ASREngineConfig& config) {
     sample_rate_ = config.sample_rate;
 
 #if VIM_HAS_SHERPA_ONNX
-    // Configure the offline recognizer with SenseVoice model
     SherpaOnnxOfflineRecognizerConfig recfg;
     std::memset(&recfg, 0, sizeof(recfg));
 
-    SherpaOnnxOfflineModelConfig mcfg;
-    std::memset(&mcfg, 0, sizeof(mcfg));
-    mcfg.sense_voice.model = (config.model_dir + "/model.int8.onnx").c_str();
-    mcfg.sense_voice.tokens = (config.model_dir + "/tokens.txt").c_str();
-    mcfg.sense_voice.use_itn = 1;
+    std::string model_path = config.model_dir + "/model.int8.onnx";
+    std::string tokens_path = config.model_dir + "/tokens.txt";
 
-    // Optional: hotwords file for domain-specific terms
-    // mfg.sense_voice.hotwords_file = ...
-
-    recfg.model_config = mcfg;
+    recfg.model_config.sense_voice.model = model_path.c_str();
+    recfg.model_config.sense_voice.use_itn = 1;
+    recfg.model_config.tokens = tokens_path.c_str();
+    recfg.model_config.num_threads = 2;
+    recfg.model_config.debug = 0;
+    recfg.model_config.provider = "cpu";
 
     impl_->recognizer = SherpaOnnxCreateOfflineRecognizer(&recfg);
     if (!impl_->recognizer) {
-        std::fprintf(stderr, "[SherpaOnnxASR] Failed to create recognizer\n");
+        spdlog::error("SherpaOnnxASR: failed to create recognizer");
         return false;
     }
 
-    std::printf("[SherpaOnnxASR] Initialized with model: %s\n",
-                config.model_dir.c_str());
+    impl_->stream = SherpaOnnxCreateOfflineStream(impl_->recognizer);
+    if (!impl_->stream) {
+        spdlog::error("SherpaOnnxASR: failed to create stream");
+        SherpaOnnxDestroyOfflineRecognizer(impl_->recognizer);
+        impl_->recognizer = nullptr;
+        return false;
+    }
+
+    spdlog::info("SherpaOnnxASR: initialized (model={})", model_path);
     ready_.store(true);
     return true;
 #else
-    // Stub mode: works without sherpa-onnx linked
-    std::fprintf(stderr, "[SherpaOnnxASR] sherpa-onnx not available — stub mode\n");
-    std::fprintf(stderr, "[SherpaOnnxASR] Model dir: %s (not loaded)\n",
-                 config.model_dir.c_str());
+    spdlog::warn("SherpaOnnxASR: sherpa-onnx SDK not available — stub mode");
+    spdlog::warn("  Expected: {}/model.int8.onnx", config.model_dir);
     ready_.store(true);
     return true;
 #endif
@@ -75,71 +73,56 @@ bool SherpaOnnxASR::initialize(const ASREngineConfig& config) {
 
 void SherpaOnnxASR::process_audio(const float* samples, std::size_t count) {
     if (!ready_.load()) return;
-
-#if VIM_HAS_SHERPA_ONNX
     accumulated_samples_.insert(accumulated_samples_.end(), samples, samples + count);
-
-    // Try to decode if we have enough samples (>= 0.5 seconds)
-    int min_samples = sample_rate_ / 2; // 500ms
-    if (static_cast<int>(accumulated_samples_.size()) >= min_samples) {
-        // Create a stream from the accumulated buffer
-        // sherpa-onnx offline API expects complete audio; for streaming,
-        // we'd use the online recognizer API. For now, accumulate and decode.
-        // The actual decode happens in end_utterance().
-    }
-#else
-    // Stub: accumulate samples for testing
-    accumulated_samples_.insert(accumulated_samples_.end(), samples, samples + count);
-#endif
 }
 
 void SherpaOnnxASR::end_utterance() {
-    if (!ready_.load()) return;
+    if (!ready_.load() || accumulated_samples_.empty()) return;
 
 #if VIM_HAS_SHERPA_ONNX
-    if (accumulated_samples_.empty() || !impl_->recognizer) return;
-
-    // Create a wave object from accumulated audio
-    SherpaOnnxWave wave;
-    wave.samples = accumulated_samples_.data();
-    wave.sample_rate = sample_rate_;
-    wave.num_samples = static_cast<int32_t>(accumulated_samples_.size());
+    if (!impl_->stream) return;
 
     auto t0 = std::chrono::steady_clock::now();
 
+    SherpaOnnxAcceptWaveformOffline(
+        impl_->stream, sample_rate_,
+        accumulated_samples_.data(),
+        static_cast<int32_t>(accumulated_samples_.size()));
+
+    SherpaOnnxDecodeOfflineStream(impl_->recognizer, impl_->stream);
+
     const SherpaOnnxOfflineRecognizerResult* result =
-        SherpaOnnxGetOfflineRecognizerResult(impl_->recognizer, &wave);
+        SherpaOnnxGetOfflineStreamResult(impl_->stream);
 
     auto t1 = std::chrono::steady_clock::now();
     float elapsed_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
 
-    if (result && result->text) {
+    if (result && result->text && result_callback_) {
         ASRResult r;
         r.text = result->text;
-        r.confidence = 0.95f; // sherpa-onnx doesn't expose per-result confidence
-        r.language = "zh";
+        r.confidence = 0.95f;
+        r.language = result->lang ? result->lang : "zh";
         r.is_partial = false;
         r.timestamp_ms = 0;
+        result_callback_(r, callback_user_data_);
 
-        if (result_callback_) {
-            result_callback_(r, callback_user_data_);
-        }
-
-        std::printf("[SherpaOnnxASR] Decoded in %.1fms: '%s'\n",
-                    elapsed_ms, result->text);
+        spdlog::info("SherpaOnnxASR: '{}' ({:.1f}ms)", result->text, elapsed_ms);
     }
 
-    SherpaOnnxDestroyOfflineRecognizerResult(result);
+    if (result) SherpaOnnxDestroyOfflineRecognizerResult(result);
+
+    // Offline stream is single-use — recreate for next utterance
+    SherpaOnnxDestroyOfflineStream(impl_->stream);
+    impl_->stream = SherpaOnnxCreateOfflineStream(impl_->recognizer);
 #endif
 
-    // Always fire a result in stub mode for testing
 #if !VIM_HAS_SHERPA_ONNX
-    if (!accumulated_samples_.empty() && result_callback_) {
-        float duration_s = static_cast<float>(accumulated_samples_.size()) / static_cast<float>(sample_rate_);
+    float duration_s = static_cast<float>(accumulated_samples_.size())
+                     / static_cast<float>(sample_rate_);
+    if (result_callback_) {
         ASRResult r;
-        r.text = "[stub] " + std::to_string(static_cast<int>(duration_s * 1000))
-               + "ms of audio (" + std::to_string(accumulated_samples_.size())
-               + " samples)";
+        r.text = "[stub:sherpa-onnx] " + std::to_string(static_cast<int>(duration_s * 1000))
+               + "ms audio (" + std::to_string(accumulated_samples_.size()) + " samples)";
         r.confidence = 1.0f;
         r.language = "zh";
         r.is_partial = false;
@@ -163,6 +146,10 @@ bool SherpaOnnxASR::is_ready() const {
 void SherpaOnnxASR::reset() {
     accumulated_samples_.clear();
 #if VIM_HAS_SHERPA_ONNX
+    if (impl_->stream) {
+        SherpaOnnxDestroyOfflineStream(impl_->stream);
+        impl_->stream = nullptr;
+    }
     if (impl_->recognizer) {
         SherpaOnnxDestroyOfflineRecognizer(impl_->recognizer);
         impl_->recognizer = nullptr;
