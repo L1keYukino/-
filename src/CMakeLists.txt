@@ -1,8 +1,10 @@
-file(GLOB_RECURSE VIM_SOURCES CONFIGURE_DEPENDS
+file(GLOB_RECURSE VIM_LIB_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
 )
+# Exclude main.cpp from the library
+list(FILTER VIM_LIB_SOURCES EXCLUDE REGEX "main\\.cpp$")
 
-add_library(voice_input_method STATIC ${VIM_SOURCES})
+add_library(voice_input_method STATIC ${VIM_LIB_SOURCES})
 
 target_include_directories(voice_input_method
     PUBLIC
@@ -25,7 +27,28 @@ endif()
 include("${CMAKE_SOURCE_DIR}/cmake/CompilerWarnings.cmake")
 set_project_warnings(voice_input_method)
 
-# Turn off sign-conversion warnings (too noisy with external API types)
+# Turn off sign-conversion warnings
 target_compile_options(voice_input_method PRIVATE
+    $<$<CXX_COMPILER_ID:GNU>:-Wno-sign-conversion>
+)
+
+# ─── Executable target ──────────────────────────────────
+
+add_executable(voice_input_method_app
+    "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp"
+)
+
+target_link_libraries(voice_input_method_app PRIVATE
+    voice_input_method
+)
+
+# Static linking to avoid DLL runtime dependencies
+if(MINGW)
+    target_link_options(voice_input_method_app PRIVATE -static -static-libgcc -static-libstdc++)
+    target_link_libraries(voice_input_method_app PRIVATE winhttp)
+endif()
+
+set_project_warnings(voice_input_method_app)
+target_compile_options(voice_input_method_app PRIVATE
     $<$<CXX_COMPILER_ID:GNU>:-Wno-sign-conversion>
 )
