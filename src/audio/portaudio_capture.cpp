@@ -85,21 +85,9 @@ static int pa_callback(const void* input, void* /*output*/,
     auto* self = static_cast<PortAudioCapture*>(user_data);
     const float* samples = static_cast<const float*>(input);
 
-    if (flags & paInputUnderflow) {
-        std::fprintf(stderr, "[PortAudio] input underflow\n");
-    }
-    if (flags & paInputOverflow) {
-        std::fprintf(stderr, "[PortAudio] input overflow\n");
-    }
-
     if (samples && frame_count > 0) {
         std::size_t total = frame_count * static_cast<std::size_t>(self->channels());
-        std::size_t written = self->ring_buffer().write(samples, total);
-        static int call_count = 0;
-        if (++call_count <= 3) {
-            std::fprintf(stderr, "[PortAudio] callback #%d: %lu frames, %zu/%zu samples written\n",
-                         call_count, frame_count, written, total);
-        }
+        self->ring_buffer().write(samples, total);
     }
 
     return paContinue;
@@ -164,7 +152,6 @@ void PortAudioCapture::stop() {
         Pa_CloseStream(impl_->stream);
         impl_->stream = nullptr;
     }
-    // Pa_Terminate() only in destructor
 #endif
 
     // ring buffer intentionally NOT reset — caller drains it after stop()

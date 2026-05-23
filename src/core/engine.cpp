@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <fstream>
 #include <spdlog/spdlog.h>
 
 namespace vim {
@@ -214,8 +213,11 @@ void VoiceEngine::ptt_press() {
 void VoiceEngine::ptt_release() {
     if (!ptt_active_.exchange(false)) return;
 
+    spdlog::info("ptt_release: stopping audio...");
     audio_->stop();
+    spdlog::info("ptt_release: audio stopped, draining...");
     drain_audio_and_recognize();
+    spdlog::info("ptt_release: done");
 }
 
 // ─── Continuous dictation mode ──────────────────────────
@@ -355,6 +357,19 @@ void VoiceEngine::on_recognition_result(const ASRResult& result) {
 
     spdlog::info("ASR final: '{}' (confidence: {:.2f})", result.text, result.confidence);
 
+    // Gate: if ASR returns gibberish (too short, no real content), skip silently
+    int meaningful = 0;
+    for (char c : result.text) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if ((uc >= 0x80) || (uc >= 'a' && uc <= 'z') || (uc >= 'A' && uc <= 'Z'))
+            meaningful++;
+    }
+    if (result.text.size() < 8 && meaningful < 4) {
+        spdlog::warn("ASR text too short/silent — skipping LLM");
+        state_machine_.force_state(EngineState::Idle);
+        notify_state_change(EngineState::Recognizing, EngineState::Idle);
+        return;
+    }
 
     auto prev = state_machine_.state();
     state_machine_.transition_to(EngineState::Correcting);
@@ -465,39 +480,6 @@ void VoiceEngine::drain_audio_and_recognize() {
     std::vector<float> chunk(available);
     std::size_t read = rb.read(chunk.data(), available);
     chunk.resize(read);
-
-    // DEBUG: save audio to WAV file for diagnostics
-    {
-        std::ofstream wav("debug_recording.wav", std::ios::binary);
-        int sr = config_.audio.sample_rate;
-        int bits = 16;
-        int data_size = static_cast<int>(read * 2);
-        wav.write("RIFF", 4);
-        int32_t file_size = 36 + data_size;
-        wav.write(reinterpret_cast<const char*>(&file_size), 4);
-        wav.write("WAVE", 4);
-        wav.write("fmt ", 4);
-        int32_t fmt_size = 16;
-        wav.write(reinterpret_cast<const char*>(&fmt_size), 4);
-        int16_t audio_fmt = 1;
-        wav.write(reinterpret_cast<const char*>(&audio_fmt), 2);
-        int16_t ch = 1;
-        wav.write(reinterpret_cast<const char*>(&ch), 2);
-        wav.write(reinterpret_cast<const char*>(&sr), 4);
-        int32_t byte_rate = sr * ch * bits / 8;
-        wav.write(reinterpret_cast<const char*>(&byte_rate), 4);
-        int16_t block_align = ch * bits / 8;
-        wav.write(reinterpret_cast<const char*>(&block_align), 2);
-        int16_t bps = bits;
-        wav.write(reinterpret_cast<const char*>(&bps), 2);
-        wav.write("data", 4);
-        wav.write(reinterpret_cast<const char*>(&data_size), 4);
-        for (auto s : chunk) {
-            int16_t pcm = static_cast<int16_t>(std::max(-1.0f, std::min(1.0f, s)) * 32767.0f);
-            wav.write(reinterpret_cast<const char*>(&pcm), 2);
-        }
-        spdlog::info("Saved debug_recording.wav ({} samples, {} Hz)", read, sr);
-    }
 
     spdlog::info("Drained {} samples ({:.1f}s) from ring buffer",
                   read,

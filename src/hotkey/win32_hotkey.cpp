@@ -29,8 +29,13 @@ static LRESULT CALLBACK hotkey_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         auto* self = reinterpret_cast<Win32HotkeyManager*>(
             GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 
+        // Debounce: ignore rapid re-triggers within 500ms
+        static DWORD last_time = 0;
+        DWORD now = GetTickCount();
+        if (now - last_time < 500) return 0;
+        last_time = now;
+
         if (self) {
-            // Toggle mode: each hotkey press flips recording state
             auto* cb = self->get_callback();
             if (cb && *cb) {
                 self->toggle_ptt();

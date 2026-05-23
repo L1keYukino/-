@@ -87,7 +87,7 @@ target_compile_options(voice_input_method PRIVATE
 
 # ─── Executable target ──────────────────────────────────
 
-add_executable(voice_input_method_app
+add_executable(voice_input_method_app WIN32
     "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp"
 )
 
