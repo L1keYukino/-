@@ -1,11 +1,14 @@
 #include "src/core/engine.hpp"
 #include "src/audio/portaudio_capture.hpp"
 #include "src/asr/sherpa_onnx_asr.hpp"
-#include "src/llm/i_llm_engine.hpp"
+#include "src/llm/llamacpp_engine.hpp"
+#include "src/llm/openai_engine.hpp"
+#include "src/llm/llm_fallback.hpp"
 #include "src/output/i_text_output.hpp"
 #include "src/hotkey/i_hotkey_manager.hpp"
 #include <algorithm>
 #include <chrono>
+#include <future>
 #include <spdlog/spdlog.h>
 
 namespace vim {
@@ -15,6 +18,7 @@ namespace vim {
 VoiceEngine::VoiceEngine(const EngineConfig& config)
     : config_(config)
     , current_intent_(config.default_intent)
+    , context_mgr_(config.max_context_turns)
 {
 }
 
@@ -54,11 +58,36 @@ bool VoiceEngine::initialize() {
     if (!asr_primary_->initialize(asr_cfg)) {
         spdlog::warn("ASR engine failed to initialize — stub mode");
     }
-
     asr_primary_->set_result_callback(on_asr_result_static, this);
 
+    // ─── LLM engine (primary: llama.cpp, fallback: OpenAI) ──
+    auto llama = std::make_unique<LlamaCppEngine>();
+    bool llama_ok = llama->initialize(
+        config_.llm_primary.model_path,
+        config_.llm_primary.n_ctx,
+        config_.llm_primary.n_threads);
+
+    if (llama_ok) {
+        spdlog::info("LLM primary (llama.cpp) initialized");
+    }
+
+    std::unique_ptr<ILLMEngine> openai;
+    if (config_.llm_fallback.enabled) {
+        auto oai = std::make_unique<OpenAIEngine>();
+        if (oai->initialize(config_.llm_fallback.api_key,
+                            config_.llm_fallback.model,
+                            config_.llm_fallback.endpoint_url)) {
+            spdlog::info("LLM fallback (OpenAI) configured");
+            openai = std::move(oai);
+        }
+    }
+
+    llm_primary_ = std::make_unique<LLMFallbackEngine>(
+        std::move(llama), std::move(openai));
+
+    // ─── Done ───────────────────────────────────────────
     initialized_.store(true);
-    spdlog::info("VoiceEngine: initialized (Phase 2: audio + ASR)");
+    spdlog::info("VoiceEngine: initialized (Phase 3: audio + ASR + LLM)");
     return true;
 }
 
@@ -152,11 +181,6 @@ void VoiceEngine::ptt_release() {
     state_machine_.transition_to(EngineState::Recognizing);
     notify_state_change(prev, EngineState::Recognizing);
 
-    std::size_t buffered = audio_->ring_buffer().read_available();
-    spdlog::debug("PTT: recording stopped, {} samples in buffer ({:.1f} seconds)",
-                  buffered,
-                  static_cast<float>(buffered) / static_cast<float>(config_.audio.sample_rate));
-
     drain_audio_and_recognize();
 }
 
@@ -179,7 +203,7 @@ ILLMEngine*     VoiceEngine::llm_engine()     const { return llm_primary_.get();
 ITextOutput*    VoiceEngine::text_output()    const { return output_.get(); }
 IHotkeyManager* VoiceEngine::hotkey_manager() const { return hotkey_.get(); }
 
-// ─── Pipeline: ASR result → event dispatch ──────────────
+// ─── Pipeline: ASR result → LLM → output ────────────────
 
 void VoiceEngine::on_asr_result_static(const ASRResult& result, void* user_data) {
     auto* self = static_cast<VoiceEngine*>(user_data);
@@ -197,15 +221,90 @@ void VoiceEngine::on_recognition_result(const ASRResult& result) {
 
     auto prev = state_machine_.state();
     state_machine_.transition_to(EngineState::Correcting);
-    notify_state_change(prev, EngineState::Correcting, "ASR result received");
-
+    notify_state_change(prev, EngineState::Correcting, "ASR complete, starting LLM correction");
     notify_transcription(result.text, false, result.confidence, result.language);
 
-    auto prev2 = state_machine_.state();
-    state_machine_.transition_to(EngineState::Outputting);
-    notify_state_change(prev2, EngineState::Outputting);
+    // Phase 3: run error correction via LLM
+    if (config_.enable_error_correction && llm_primary_ && llm_primary_->is_ready()) {
+        run_error_correction(result.text);
+    } else {
+        // No LLM available — pass raw text directly
+        spdlog::info("LLM not available, using raw ASR text");
+        run_intent_formatting(result.text);
+    }
+}
 
-    notify_llm_output(result.text, result.text, result.text,
+// ─── LLM pass 1: Error correction ───────────────────────
+
+void VoiceEngine::run_error_correction(const std::string& raw_text) {
+    spdlog::info("Running LLM error correction...");
+
+    const auto& ec_tmpl = prompt_catalog_.error_correction_template();
+
+    LLMRequest req;
+    req.intent = IntentType::General;
+    req.temperature = config_.llm_primary.temperature;
+    req.max_tokens = config_.llm_primary.max_tokens;
+    req.messages = {
+        {"system", ec_tmpl.system_prompt},
+        {"user", raw_text},
+    };
+
+    auto resp = llm_primary_->process_streaming(req, [](const std::string&) {
+        return true; // streaming tokens — for future real-time UI
+    });
+
+    std::string corrected = raw_text;
+    if (resp.success && !resp.text.empty()) {
+        corrected = resp.text;
+        spdlog::info("LLM corrected: '{}' → '{}'", raw_text, corrected);
+    } else {
+        spdlog::warn("LLM correction failed: {}", resp.error_message);
+    }
+
+    auto prev = state_machine_.state();
+    state_machine_.transition_to(EngineState::Formatting);
+    notify_state_change(prev, EngineState::Formatting);
+
+    run_intent_formatting(corrected);
+}
+
+// ─── LLM pass 2: Intent formatting ──────────────────────
+
+void VoiceEngine::run_intent_formatting(const std::string& corrected_text) {
+    spdlog::info("Running LLM intent formatting (intent: {})...",
+                 intent_type_name(current_intent_));
+
+    auto messages = prompt_catalog_.build_messages(
+        current_intent_, context_mgr_.history(), corrected_text);
+
+    LLMRequest req;
+    req.intent = current_intent_;
+    req.temperature = config_.llm_primary.temperature;
+    req.max_tokens = config_.llm_primary.max_tokens;
+    req.messages = messages;
+
+    auto resp = llm_primary_->process_streaming(req, [](const std::string&) {
+        return true;
+    });
+
+    std::string formatted = corrected_text;
+    if (resp.success && !resp.text.empty()) {
+        formatted = resp.text;
+        spdlog::info("LLM formatted: '{}'", formatted);
+    } else {
+        spdlog::warn("LLM formatting failed: {}", resp.error_message);
+    }
+
+    // Update conversation context
+    context_mgr_.add_turn(corrected_text, formatted);
+
+    auto prev = state_machine_.state();
+    state_machine_.transition_to(EngineState::Outputting);
+    notify_state_change(prev, EngineState::Outputting, "LLM complete");
+
+    // Notify observers with full pipeline output
+    notify_llm_output(corrected_text, corrected_text, formatted,
                       current_intent_, false);
 
     state_machine_.transition_to(EngineState::Idle);
