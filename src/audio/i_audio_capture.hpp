@@ -26,6 +26,7 @@ public:
                        AudioCallback callback, void* user_data) = 0;
     virtual void stop() = 0;
     virtual bool is_running() const = 0;
+    virtual float peak_db() const = 0;  // VU meter support
     virtual const char* backend_name() const = 0;
 };
 

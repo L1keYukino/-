@@ -28,6 +28,8 @@ public:
     AudioRingBuffer& ring_buffer() { return ring_buffer_; }
     int channels() const { return channels_; }
     int sample_rate() const { return sample_rate_; }
+    float peak_db() const override;
+    std::atomic<float> last_peak_{0.0f};  // written by audio callback, read by VU
 
 private:
     AudioRingBuffer ring_buffer_;

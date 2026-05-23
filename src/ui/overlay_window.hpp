@@ -24,6 +24,7 @@ public:
     void show_result(const std::string& text);
     void hide();
 
+    void set_audio_level(float db);
     void set_asr_text(const std::string& text);
 
 private:
@@ -35,6 +36,7 @@ private:
     std::wstring status_line_;
     std::wstring asr_line_;
     std::wstring output_line_;
+    float audio_level_db_ = -60.0f;
     std::mutex text_mutex_;
     std::atomic<bool> visible_{false};
     HINSTANCE hinst_ = nullptr;

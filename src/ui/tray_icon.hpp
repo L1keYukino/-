@@ -24,6 +24,7 @@ public:
     void set_menu_start_callback(Callback cb) { on_start_ = std::move(cb); }
     void set_menu_stop_callback(Callback cb)  { on_stop_ = std::move(cb); }
     void set_menu_quit_callback(Callback cb)  { on_quit_ = std::move(cb); }
+    void set_menu_settings_callback(Callback cb) { on_settings_ = std::move(cb); }
     void set_left_click_callback(Callback cb) { on_click_ = std::move(cb); }
 
     void set_tooltip(const std::string& text);
@@ -42,6 +43,7 @@ private:
     Callback on_start_;
     Callback on_stop_;
     Callback on_quit_;
+    Callback on_settings_;
     Callback on_click_;
 };
 

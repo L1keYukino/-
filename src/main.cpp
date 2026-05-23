@@ -1,7 +1,9 @@
 #include "src/core/engine.hpp"
+#include "src/audio/portaudio_capture.hpp"
 #include "src/output/sendinput_output.hpp"
 #include "src/ui/tray_icon.hpp"
 #include "src/ui/overlay_window.hpp"
+#include "src/ui/settings_dialog.hpp"
 #include <thread>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -16,6 +18,7 @@ vim::VoiceEngine*      g_engine  = nullptr;
 vim::SendInputOutput*  g_output  = nullptr;
 vim::TrayIcon*         g_tray    = nullptr;
 vim::OverlayWindow*    g_overlay = nullptr;
+vim::EngineConfig*     g_config  = nullptr;
 
 std::string g_last_formatted;
 bool g_recording = false;
@@ -95,24 +98,49 @@ struct UIObserver : public vim::IEngineObserver {
 // Hidden window for tray icon message handling
 static const wchar_t* MAIN_WINDOW_CLASS = L"VIM_MainWindow";
 static constexpr UINT WM_TRAYICON = WM_APP + 1;
-static DWORD last_toggle_ms = 0;
+static constexpr UINT TIMER_VU = 1;
+static bool g_ptt_held = false;
 
 LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-    case WM_TRAYICON:
+    case WM_TIMER:
+        if (wp == TIMER_VU && g_recording && g_engine && g_overlay) {
+            auto* audio = g_engine->audio_capture();
+            if (audio) g_overlay->set_audio_level(audio->peak_db());
+        }
+        return 0;
         if (LOWORD(lp) == WM_LBUTTONUP) {
-            toggle_recording();
+            // Toggle on left-click (tray fallback)
+            if (!g_ptt_held) {
+                if (!g_recording && !g_processing) g_engine->ptt_press();
+                else if (g_recording) g_engine->ptt_release();
+            }
         } else if (LOWORD(lp) == WM_RBUTTONUP) {
             if (g_tray) g_tray->show_menu();
         }
         return 0;
     case WM_HOTKEY:
-        {
-            DWORD now = GetTickCount();
-            if (now - last_toggle_ms < 300) return 0;
-            last_toggle_ms = now;
+        if (g_ptt_held) return 0;
+        g_ptt_held = true;
+        if (!g_processing) {
+            g_engine->ptt_press();
+            SetTimer(hwnd, TIMER_VU, 80, nullptr);
         }
-        toggle_recording();
+
+        {
+            UINT vk = static_cast<UINT>(lp) >> 16;
+            while (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) {
+                Sleep(30);
+                MSG m;
+                while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&m);
+                    DispatchMessageW(&m);
+                }
+            }
+            KillTimer(hwnd, TIMER_VU);
+            g_ptt_held = false;
+            if (g_recording) g_engine->ptt_release();
+        }
         return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -133,6 +161,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
     // ─── Load config ────────────────────────────────────
     vim::EngineConfig config = vim::make_default_config();
+    g_config = &config;
     try {
         config = vim::load_config_from_file("config/default_config.json");
         spdlog::info("Loaded config");
@@ -182,6 +211,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         PostQuitMessage(0);
     });
     tray.set_left_click_callback([]() { toggle_recording(); });
+    tray.set_menu_settings_callback([hwnd, hInstance]() {
+        if (g_config) show_settings_dialog(hInstance, hwnd, *g_config);
+    });
 
     // ─── Overlay window ─────────────────────────────────
     vim::OverlayWindow overlay;

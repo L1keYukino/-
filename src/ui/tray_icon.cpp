@@ -115,6 +115,8 @@ void TrayIcon::show_menu() {
         AppendMenuW(menu, MF_STRING, 1, L"🎤 开始录音");
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, 2, L"⚙ 设置");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 3, L"❌ 退出");
 
     POINT pt;
@@ -129,6 +131,9 @@ void TrayIcon::show_menu() {
     case 1:
         if (recording_.load() && on_stop_) on_stop_();
         else if (on_start_) on_start_();
+        break;
+    case 2:
+        if (on_settings_) on_settings_();
         break;
     case 3:
         if (on_quit_) on_quit_();

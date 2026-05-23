@@ -1,4 +1,6 @@
 #include "src/audio/portaudio_capture.hpp"
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 
@@ -79,7 +81,7 @@ bool PortAudioCapture::select_device(const std::string& device_id) {
 static int pa_callback(const void* input, void* /*output*/,
                        unsigned long frame_count,
                        const PaStreamCallbackTimeInfo* /*time*/,
-                       PaStreamCallbackFlags flags,
+                       PaStreamCallbackFlags /*flags*/,
                        void* user_data)
 {
     auto* self = static_cast<PortAudioCapture*>(user_data);
@@ -88,6 +90,12 @@ static int pa_callback(const void* input, void* /*output*/,
     if (samples && frame_count > 0) {
         std::size_t total = frame_count * static_cast<std::size_t>(self->channels());
         self->ring_buffer().write(samples, total);
+
+        // Update peak for VU meter
+        float peak = 0.0f;
+        for (std::size_t i = 0; i < total; ++i)
+            peak = std::max(peak, std::abs(samples[i]));
+        self->last_peak_.store(peak, std::memory_order_relaxed);
     }
 
     return paContinue;
@@ -159,6 +167,12 @@ void PortAudioCapture::stop() {
 
 bool PortAudioCapture::is_running() const {
     return running_.load();
+}
+
+float PortAudioCapture::peak_db() const {
+    float peak = last_peak_.load(std::memory_order_relaxed);
+    if (peak < 0.001f) return -60.0f;
+    return 20.0f * std::log10(peak);
 }
 
 } // namespace vim

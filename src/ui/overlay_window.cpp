@@ -109,6 +109,13 @@ void OverlayWindow::hide() {
     ShowWindow(hwnd_, SW_HIDE);
 }
 
+void OverlayWindow::set_audio_level(float db) {
+    if (!visible_.load()) return;
+    std::lock_guard<std::mutex> lock(text_mutex_);
+    audio_level_db_ = db;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void OverlayWindow::set_asr_text(const std::string& text) {
     if (!visible_.load()) return;
     std::lock_guard<std::mutex> lock(text_mutex_);
@@ -155,6 +162,26 @@ LRESULT CALLBACK OverlayWindow::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
 
         std::lock_guard<std::mutex> lock(self->text_mutex_);
         self->draw_text(hdc, self->status_line_, 12, RGB(255, 255, 255), 22);
+
+        // VU meter: 8 thin bars, bottom of window
+        float db = self->audio_level_db_;
+        int bar_x = 15, bar_y = self->height_ - 30, bar_w = 34, bar_h = 16, gap = 5;
+        for (int i = 0; i < 8; ++i) {
+            float threshold = -48.0f + i * 5.0f; // -48 to -13 dB range
+            COLORREF color;
+            if (db > threshold) {
+                if (i < 4)      color = RGB(0, 200, 80);       // green
+                else if (i < 6) color = RGB(220, 180, 0);      // yellow
+                else            color = RGB(220, 50, 50);       // red
+            } else {
+                color = RGB(45, 45, 45); // dark inactive
+            }
+            HBRUSH b = CreateSolidBrush(color);
+            RECT br{bar_x + i * (bar_w + gap), bar_y, bar_x + i * (bar_w + gap) + bar_w, bar_y + bar_h};
+            FillRect(hdc, &br, b);
+            DeleteObject(b);
+        }
+
         if (!self->asr_line_.empty())
             self->draw_text(hdc, L"📝 " + self->asr_line_, 48, RGB(180, 180, 180), 16);
         if (!self->output_line_.empty())
