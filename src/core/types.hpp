@@ -26,12 +26,13 @@ enum class EngineMode {
 // ─── Intent types ───────────────────────────────────────
 
 enum class IntentType {
-    General,        // plain dictation + error correction
+    General,        // smart auto-detection
     Email,          // format as email body
     Chat,           // format as chat message
     CodeComment,    // format as code comment
     Documentation,  // format as formal documentation
     Command,        // format as CLI command
+    Summary,        // extract key points as bullet list
 };
 
 // ─── Hotkey modifiers (bitmask) ─────────────────────────
@@ -90,6 +91,7 @@ inline const char* intent_type_name(IntentType i) {
         case IntentType::CodeComment:    return "code_comment";
         case IntentType::Documentation:  return "documentation";
         case IntentType::Command:        return "command";
+        case IntentType::Summary:        return "summary";
     }
     return "unknown";
 }

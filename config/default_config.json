@@ -32,11 +32,11 @@
     "max_tokens": 512
   },
   "llm_fallback": {
-    "type": "none",
-    "api_key": "",
-    "model": "gpt-4o-mini",
-    "endpoint_url": "https://api.openai.com/v1",
-    "enabled": false
+    "type": "openai",
+    "api_key": "sk-544007a27f7244fd8dfef18f3c1da7e6",
+    "model": "deepseek-chat",
+    "endpoint_url": "https://api.deepseek.com/v1",
+    "enabled": true
   },
   "output": {
     "type": "sendinput",
@@ -53,7 +53,7 @@
     "continuous_max_segment_ms": 30000
   },
   "default_intent": "general",
-  "enabled_intents": ["general", "email", "chat", "code_comment", "documentation", "command"],
+  "enabled_intents": ["general", "email", "chat", "code_comment", "documentation", "command", "summary"],
   "max_context_turns": 5,
   "enable_error_correction": true
 }

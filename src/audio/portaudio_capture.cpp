@@ -26,6 +26,12 @@ PortAudioCapture::PortAudioCapture()
 
 PortAudioCapture::~PortAudioCapture() {
     stop();
+#ifdef VIM_HAS_PORTAUDIO
+    if (pa_initialized_) {
+        Pa_Terminate();
+        pa_initialized_ = false;
+    }
+#endif
 }
 
 // ─── Device enumeration ─────────────────────────────────
@@ -33,7 +39,10 @@ PortAudioCapture::~PortAudioCapture() {
 std::vector<AudioDeviceInfo> PortAudioCapture::enumerate_devices() {
     std::vector<AudioDeviceInfo> result;
 #ifdef VIM_HAS_PORTAUDIO
-    Pa_Initialize();
+    if (!pa_initialized_) {
+        Pa_Initialize();
+        pa_initialized_ = true;
+    }
     int n = Pa_GetDeviceCount();
     for (int i = 0; i < n; ++i) {
         const PaDeviceInfo* info = Pa_GetDeviceInfo(i);
@@ -46,7 +55,7 @@ std::vector<AudioDeviceInfo> PortAudioCapture::enumerate_devices() {
             result.push_back(dev);
         }
     }
-    Pa_Terminate();
+    // Pa_Terminate() moved to destructor
 #else
     // Stub: return a default device so the API doesn't break
     AudioDeviceInfo dev;
@@ -109,13 +118,13 @@ bool PortAudioCapture::start(int sample_rate, int channels,
     user_data_ = user_data;
 
 #ifdef VIM_HAS_PORTAUDIO
-    PaError err = Pa_Initialize();
-    if (err != paNoError) {
-        std::fprintf(stderr, "[PortAudio] Pa_Initialize failed: %s\n", Pa_GetErrorText(err));
-        return false;
+    if (!pa_initialized_) {
+        Pa_Initialize();
+        pa_initialized_ = true;
     }
 
     PaStreamParameters params;
+    PaError err;
     params.device = selected_device_id_.empty()
         ? Pa_GetDefaultInputDevice()
         : std::stoi(selected_device_id_);
@@ -126,11 +135,10 @@ bool PortAudioCapture::start(int sample_rate, int channels,
 
     err = Pa_OpenStream(&impl_->stream, &params, nullptr,
                         static_cast<double>(sample_rate),
-                        0, // frames per buffer (0 = automatic)
+                        0,
                         paNoFlag, pa_callback, this);
     if (err != paNoError) {
         std::fprintf(stderr, "[PortAudio] Pa_OpenStream failed: %s\n", Pa_GetErrorText(err));
-        Pa_Terminate();
         return false;
     }
 
@@ -138,7 +146,7 @@ bool PortAudioCapture::start(int sample_rate, int channels,
     if (err != paNoError) {
         std::fprintf(stderr, "[PortAudio] Pa_StartStream failed: %s\n", Pa_GetErrorText(err));
         Pa_CloseStream(impl_->stream);
-        Pa_Terminate();
+        impl_->stream = nullptr;
         return false;
     }
 #endif
@@ -156,7 +164,7 @@ void PortAudioCapture::stop() {
         Pa_CloseStream(impl_->stream);
         impl_->stream = nullptr;
     }
-    Pa_Terminate();
+    // Pa_Terminate() only in destructor
 #endif
 
     // ring buffer intentionally NOT reset — caller drains it after stop()

@@ -6,93 +6,90 @@ PromptCatalog::PromptCatalog() {
     error_correction_ = {
         IntentType::General,
         "Error Correction",
-        "Post-process ASR output: fix homophones, punctuation, capitalization",
-        "You are a speech recognition post-processor. Your task is to correct "
-        "ASR transcription errors (homophones, missing punctuation, capitalization) "
-        "while preserving the speaker's exact wording and intent. Do NOT rephrase, "
-        "summarize, or add information. Output only the corrected text with no commentary.",
+        "Fix ASR errors only, don't change meaning",
+        "你是一个语音纠错器。只修正明显的语音识别错误（错字、漏字、多字），"
+        "保留原话的意思和风格。不要改写内容。只输出纠错后的文本。",
         {}
     };
 
     templates_ = {
+        // ─── General: LLM decides the best output ──────
         {
             IntentType::General,
-            "General Dictation",
-            "Format spoken text with proper punctuation and paragraph breaks",
-            "You are a dictation assistant. Format the user's spoken text with "
-            "proper punctuation and paragraph breaks. Fix any obvious ASR errors "
-            "(wrong characters, missing punctuation). Output only the formatted text "
-            "with no additional commentary.",
+            "智能输出",
+            "理解内容，自动选择最佳输出格式",
+            "你是语音输入法的智能后处理引擎。接收语音识别的原始文本，根据内容自动判断用户意图，"
+            "输出最合适的结果：\n\n"
+            "判断规则（你自己判断，不是用户告诉你）：\n"
+            "- 内容是写邮件/发消息给某人 → 输出完整邮件或消息格式\n"
+            "- 内容是会议记录/讨论/多要点 → 用「- 」清单总结关键信息\n"
+            "- 内容是代码/技术描述 → 输出代码注释或技术文档\n"
+            "- 内容是简短日常对话 → 直接输出通顺文字\n\n"
+            "重要：不要在输出中解释你做了什么，直接输出结果。",
             {}
         },
+        // ─── Email: format as professional email ────────
         {
             IntentType::Email,
-            "Email",
-            "Format dictation as a professional email",
-            "You are an email formatting assistant. Format the user's dictation as "
-            "a professional email.\n\n"
-            "Rules:\n"
-            "- First line: 'Subject: <brief subject>'\n"
-            "- Blank line after subject\n"
-            "- Appropriate greeting (e.g. 'Dear ...' or 'Hi ...')\n"
-            "- Body with proper paragraphs\n"
-            "- Appropriate closing and signature placeholder\n"
-            "- Keep tone professional and concise\n"
-            "Output only the formatted email, no commentary.",
+            "写邮件",
+            "根据口述内容生成完整邮件",
+            "将以下口述内容整理为一封正式邮件：\n"
+            "Subject: [简短标题]\n"
+            "\n"
+            "[合适称呼]\n"
+            "\n"
+            "[正式正文]\n"
+            "\n"
+            "[落款]",
             {
-                {"ask my boss for a sick day tomorrow",
-                 "Subject: Sick Leave Request - Tomorrow\n\n"
-                 "Dear [Boss's Name],\n\n"
-                 "I am writing to request a sick day for tomorrow as I am not "
-                 "feeling well. I will ensure any urgent matters are handled "
-                 "before then.\n\n"
-                 "Best regards,\n"
-                 "[Your Name]"},
+                {"发烧了请假一天",
+                 "Subject: 请假申请\n\n领导您好，\n\n我因发烧身体不适，今天无法到岗，申请请假一天。请批准。\n\n祝好，\n小王"},
             }
         },
+        // ─── Chat ───────────────────────────────────────
         {
             IntentType::Chat,
-            "Chat Message",
-            "Format dictation as a casual chat message",
-            "You are a chat message formatter. Format the user's dictation as a "
-            "natural, conversational chat message. Keep it brief and casual. "
-            "Use appropriate tone for informal messaging. "
-            "Output only the formatted message, no commentary.",
+            "聊天",
+            "整理成口语化聊天消息",
+            "把用户说的话整理成自然的聊天消息，加上合适标点。保持口语化。只输出消息。",
             {}
         },
+        // ─── CodeComment ────────────────────────────────
         {
             IntentType::CodeComment,
-            "Code Comment",
-            "Format dictation as a clear code comment",
-            "You are a code comment formatter. Format the user's dictation as a "
-            "clear, concise code comment. Wrap text to approximately 80 characters. "
-            "Use // style for single-line comments, /* */ for multi-line. "
-            "Output only the comment text (including comment markers), no commentary.",
+            "代码注释",
+            "整理成代码注释",
+            "把用户对代码的描述整理成简洁的代码注释。用 // 格式。只输出注释。",
             {}
         },
+        // ─── Documentation ──────────────────────────────
         {
             IntentType::Documentation,
-            "Documentation",
-            "Format dictation as technical documentation",
-            "You are a technical documentation formatter. Format the user's dictation "
-            "as clear technical documentation. Use proper headings, bullet points "
-            "(with '-' prefix), and precise technical language. "
-            "Output only the formatted documentation, no commentary.",
+            "文档",
+            "整理成技术文档条目",
+            "把用户的描述整理成结构化的文档条目。用 Markdown 格式。只输出文档。",
             {}
         },
+        // ─── Command ────────────────────────────────────
         {
             IntentType::Command,
-            "CLI Command",
-            "Convert spoken description into the correct CLI command",
-            "You are a CLI command formatter. Convert the user's spoken description "
-            "into the correct command-line command with appropriate flags. "
-            "Default to PowerShell syntax on Windows, bash on Linux/Mac unless "
-            "context indicates otherwise. Output only the command, no explanation.",
+            "命令",
+            "转成终端命令",
+            "把用户描述的操作转成对应的命令行。默认用 PowerShell。只输出命令。",
             {
-                {"find all text files in the current directory recursively",
+                {"查找所有txt文件",
                  "Get-ChildItem -Recurse -Filter *.txt"},
-                {"list all running processes sorted by memory usage",
-                 "Get-Process | Sort-Object -Property WS -Descending"},
+            }
+        },
+        // ─── Summary ────────────────────────────────────
+        {
+            IntentType::Summary,
+            "总结",
+            "提取要点，列成清单",
+            "从用户说的话中提取关键信息，用「- 」开头的清单列出。忽略口语冗余。只输出清单。",
+            {
+                {"下周一上午十点开会讨论新版本，张三准备演示，李四准备测试报告，我来通知大家",
+                 "- 下周一上午 10:00 开会\n- 议题：新版本发布\n- 张三：准备演示\n- 李四：准备测试报告\n- 我：通知大家"},
             }
         },
     };
@@ -102,7 +99,7 @@ const PromptTemplate& PromptCatalog::get(IntentType intent) const {
     for (const auto& t : templates_) {
         if (t.intent == intent) return t;
     }
-    return templates_[0]; // fallback to General
+    return templates_[0];
 }
 
 std::vector<LLMMessage> PromptCatalog::build_messages(
@@ -113,21 +110,17 @@ std::vector<LLMMessage> PromptCatalog::build_messages(
     std::vector<LLMMessage> messages;
     const auto& tmpl = get(intent);
 
-    // System prompt
     messages.push_back({"system", tmpl.system_prompt});
 
-    // Few-shot examples
     for (const auto& [user, assistant] : tmpl.few_shot_examples) {
         messages.push_back({"user", user});
         messages.push_back({"assistant", assistant});
     }
 
-    // Conversation history
     for (const auto& h : history) {
         messages.push_back(h);
     }
 
-    // Current user input
     messages.push_back({"user", raw_asr_text});
 
     return messages;

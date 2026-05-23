@@ -63,7 +63,7 @@ TEST_CASE("validate_config catches bad values", "[config]") {
 TEST_CASE("default_config.json can be parsed", "[config]") {
     auto cfg = load_config_from_file(cfg_path("config/default_config.json").c_str());
     REQUIRE(cfg.audio.backend == "portaudio");
-    REQUIRE(cfg.audio.sample_rate == 16000);
+    REQUIRE(cfg.audio.sample_rate == 44100);
     REQUIRE(cfg.audio.channels == 1);
     REQUIRE(cfg.mode.mode == EngineMode::PTT);
     REQUIRE(cfg.default_intent == IntentType::General);
@@ -89,8 +89,8 @@ TEST_CASE("intent parsing from JSON", "[config]") {
     auto cfg = load_config_from_file(cfg_path("config/default_config.json").c_str());
     REQUIRE(cfg.default_intent == IntentType::General);
 
-    // enabled_intents should include all six
-    REQUIRE(cfg.enabled_intents.size() == 6);
+    // enabled_intents should include all seven
+    REQUIRE(cfg.enabled_intents.size() == 7);
 }
 
 } // namespace vim

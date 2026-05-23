@@ -74,8 +74,8 @@ private:
     static void on_asr_result_static(const struct ASRResult& result, void* user_data);
     void on_recognition_result(const ASRResult& result);
     void drain_audio_and_recognize();
-    void run_error_correction(const std::string& raw_text);
-    void run_intent_formatting(const std::string& corrected_text);
+    void run_error_correction(const std::string& raw_text, IntentType intent);
+    void run_intent_formatting(const std::string& corrected_text, IntentType intent);
 
     // ─── Continuous mode ────────────────────────────────
     void continuous_loop();
@@ -93,7 +93,8 @@ private:
 
     std::unique_ptr<PortAudioCapture> audio_;
     std::unique_ptr<IASREngine>       asr_primary_;   // ASRFallbackEngine
-    std::unique_ptr<ILLMEngine>       llm_primary_;   // LLMFallbackEngine
+    std::unique_ptr<ILLMEngine>       llm_primary_;   // LLMFallbackEngine (local+cloud)
+    std::unique_ptr<ILLMEngine>       cloud_llm_;     // Cloud-only (DeepSeek/OpenAI)
     std::unique_ptr<ITextOutput>      output_;
     std::unique_ptr<IHotkeyManager>   hotkey_;
 

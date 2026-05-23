@@ -95,7 +95,7 @@ LLMResponse OpenAIEngine::process_streaming(const LLMRequest& request,
     }
 
     LLMRequest req = request;
-    req.stream = true;
+    req.stream = false; // non-streaming for simpler parsing
     std::string body = build_chat_json(req, model_);
     return send_http_request(body, &cb);
 }
@@ -120,7 +120,10 @@ LLMResponse OpenAIEngine::send_http_request(const std::string& body,
 
     const char* slash = strchr(url, '/');
     host.assign(url, slash ? static_cast<std::size_t>(slash - url) : strlen(url));
-    path = slash ? slash : "/v1/chat/completions";
+    // Endpoint URL is the base; append /chat/completions
+    std::string base_path = slash ? slash : "/v1";
+    if (base_path.back() == '/') base_path.pop_back();
+    path = base_path + "/chat/completions";
 
     DWORD port = use_https ? 443 : 80;
 
@@ -183,21 +186,48 @@ LLMResponse OpenAIEngine::send_http_request(const std::string& body,
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-    // Minimal JSON parse: extract "content" from "choices"[0]."message"."content"
+    // Parse JSON response
     std::string raw = response_body.str();
+    spdlog::info("OpenAI raw response ({} bytes): {}", raw.size(),
+                 raw.size() > 500 ? raw.substr(0, 500) + "..." : raw);
+
+    // Try "content":"..." pattern
     auto pos = raw.find("\"content\":\"");
     if (pos != std::string::npos) {
-        pos += 11; // skip "content":"
-        auto end = raw.find("\"", pos);
-        if (end != std::string::npos) {
-            resp.text = raw.substr(pos, end - pos);
+        pos += 11;
+        std::string content;
+        while (pos < raw.size()) {
+            if (raw[pos] == '\\' && pos + 1 < raw.size()) {
+                if (raw[pos+1] == '"') { content += '"'; pos += 2; continue; }
+                if (raw[pos+1] == 'n') { content += '\n'; pos += 2; continue; }
+                if (raw[pos+1] == '\\') { content += '\\'; pos += 2; continue; }
+                if (raw[pos+1] == 't') { content += '\t'; pos += 2; continue; }
+                if (raw[pos+1] == 'r') { content += '\r'; pos += 2; continue; }
+            }
+            if (raw[pos] == '"') break;
+            content += raw[pos++];
+        }
+        if (!content.empty()) {
+            resp.text = content;
             resp.success = true;
             return resp;
         }
     }
 
+    // Check for error response
+    auto err_pos = raw.find("\"message\":\"");
+    if (err_pos != std::string::npos) {
+        err_pos += 11;
+        auto err_end = raw.find("\"", err_pos);
+        if (err_end != std::string::npos) {
+            resp.error_message = raw.substr(err_pos, err_end - err_pos);
+        }
+    }
+
     resp.success = false;
-    resp.error_message = "Failed to parse OpenAI response";
+    if (resp.error_message.empty())
+        resp.error_message = "Failed to parse response";
+    spdlog::warn("OpenAI request failed: {}", resp.error_message);
     (void)cb;
     return resp;
 #else

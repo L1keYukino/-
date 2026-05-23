@@ -76,6 +76,7 @@ static IntentType parse_intent(const std::string& s) {
     if (s == "code_comment")   return IntentType::CodeComment;
     if (s == "documentation")  return IntentType::Documentation;
     if (s == "command")        return IntentType::Command;
+    if (s == "summary")        return IntentType::Summary;
     return IntentType::General;
 }
 

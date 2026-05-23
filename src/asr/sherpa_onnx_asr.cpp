@@ -36,7 +36,7 @@ bool SherpaOnnxASR::initialize(const ASREngineConfig& config) {
     SherpaOnnxOfflineRecognizerConfig recfg;
     std::memset(&recfg, 0, sizeof(recfg));
 
-    std::string model_path = config.model_dir + "/model.int8.onnx";
+    std::string model_path = config.model_dir + "/model.onnx"; // full precision, better accuracy
     std::string tokens_path = config.model_dir + "/tokens.txt";
 
     recfg.model_config.sense_voice.model = model_path.c_str();

@@ -10,6 +10,8 @@
 #include "src/hotkey/i_hotkey_manager.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <fstream>
 #include <spdlog/spdlog.h>
 
 namespace vim {
@@ -82,24 +84,23 @@ bool VoiceEngine::initialize() {
         std::move(primary_asr), std::move(fallback_asr));
     asr_primary_->set_result_callback(on_asr_result_static, this);
 
-    // ─── LLM engine (primary: llama.cpp, fallback: OpenAI) ──
+    // ─── LLM: local for correction, cloud for formatting ──
     auto llama = std::make_unique<LlamaCppEngine>();
     llama->initialize(config_.llm_primary.model_path,
                       config_.llm_primary.n_ctx,
                       config_.llm_primary.n_threads);
+    llm_primary_ = std::move(llama); // local only, for error correction
 
-    std::unique_ptr<ILLMEngine> openai;
     if (config_.llm_fallback.enabled && !config_.llm_fallback.api_key.empty()) {
         auto oai = std::make_unique<OpenAIEngine>();
         if (oai->initialize(config_.llm_fallback.api_key,
                             config_.llm_fallback.model,
                             config_.llm_fallback.endpoint_url)) {
-            openai = std::move(oai);
+            cloud_llm_ = std::move(oai);
+            spdlog::info("Cloud LLM enabled: {} @ {}",
+                         config_.llm_fallback.model, config_.llm_fallback.endpoint_url);
         }
     }
-
-    llm_primary_ = std::make_unique<LLMFallbackEngine>(
-        std::move(llama), std::move(openai));
 
     initialized_.store(true);
     spdlog::info("VoiceEngine: initialized (Phase 5: all subsystems ready)");
@@ -121,6 +122,7 @@ void VoiceEngine::shutdown() {
     audio_.reset();
     asr_primary_.reset();
     llm_primary_.reset();
+    cloud_llm_.reset();
     output_.reset();
     hotkey_.reset();
 
@@ -184,6 +186,12 @@ void VoiceEngine::stop() {
 void VoiceEngine::ptt_press() {
     if (!initialized_.load()) return;
     if (ptt_active_.exchange(true)) return;
+
+    // Force Idle if stuck in a processing state
+    auto current = state_machine_.state();
+    if (current != EngineState::Idle && current != EngineState::Listening) {
+        state_machine_.force_state(EngineState::Idle);
+    }
 
     auto prev = state_machine_.state();
     state_machine_.transition_to(EngineState::Listening);
@@ -347,19 +355,30 @@ void VoiceEngine::on_recognition_result(const ASRResult& result) {
 
     spdlog::info("ASR final: '{}' (confidence: {:.2f})", result.text, result.confidence);
 
+
     auto prev = state_machine_.state();
     state_machine_.transition_to(EngineState::Correcting);
     notify_state_change(prev, EngineState::Correcting, "ASR complete, starting correction");
     notify_transcription(result.text, false, result.confidence, result.language);
 
-    if (config_.enable_error_correction && llm_primary_ && llm_primary_->is_ready()) {
-        run_error_correction(result.text);
+    // Let LLM decide output format — no keyword hack
+    IntentType effective_intent = current_intent_;
+
+    // Cloud LLM: skip error correction, send raw ASR directly (it's smart enough)
+    if (cloud_llm_ && cloud_llm_->is_ready()) {
+        spdlog::info("Using cloud LLM for smart processing...");
+        auto prev = state_machine_.state();
+        state_machine_.transition_to(EngineState::Formatting);
+        notify_state_change(prev, EngineState::Formatting, "Cloud LLM processing");
+        run_intent_formatting(result.text, effective_intent);
+    } else if (config_.enable_error_correction && llm_primary_ && llm_primary_->is_ready()) {
+        run_error_correction(result.text, effective_intent);
     } else {
-        run_intent_formatting(result.text);
+        run_intent_formatting(result.text, effective_intent);
     }
 }
 
-void VoiceEngine::run_error_correction(const std::string& raw_text) {
+void VoiceEngine::run_error_correction(const std::string& raw_text, IntentType intent) {
     const auto& ec_tmpl = prompt_catalog_.error_correction_template();
 
     LLMRequest req;
@@ -385,22 +404,26 @@ void VoiceEngine::run_error_correction(const std::string& raw_text) {
     state_machine_.transition_to(EngineState::Formatting);
     notify_state_change(prev, EngineState::Formatting);
 
-    run_intent_formatting(corrected);
+    run_intent_formatting(corrected, intent);
 }
 
-void VoiceEngine::run_intent_formatting(const std::string& corrected_text) {
-    spdlog::info("Running LLM formatting (intent: {})", intent_type_name(current_intent_));
+void VoiceEngine::run_intent_formatting(const std::string& corrected_text, IntentType intent) {
+    // Use cloud LLM for formatting when available (smarter output)
+    ILLMEngine* fmt_engine = cloud_llm_ ? cloud_llm_.get() : llm_primary_.get();
+    const char* engine_name = cloud_llm_ ? cloud_llm_->engine_name() : "local";
+
+    spdlog::info("Running LLM formatting via {} (intent: {})", engine_name, intent_type_name(intent));
 
     auto messages = prompt_catalog_.build_messages(
-        current_intent_, context_mgr_.history(), corrected_text);
+        intent, context_mgr_.history(), corrected_text);
 
     LLMRequest req;
-    req.intent = current_intent_;
-    req.temperature = config_.llm_primary.temperature;
-    req.max_tokens = config_.llm_primary.max_tokens;
+    req.intent = intent;
+    req.temperature = cloud_llm_ ? 0.3f : config_.llm_primary.temperature;
+    req.max_tokens = cloud_llm_ ? 1024 : config_.llm_primary.max_tokens;
     req.messages = messages;
 
-    auto resp = llm_primary_->process_streaming(req, [](const std::string&) { return true; });
+    auto resp = fmt_engine->process_streaming(req, [](const std::string&) { return true; });
 
     std::string formatted = corrected_text;
     if (resp.success && !resp.text.empty()) {
@@ -417,7 +440,7 @@ void VoiceEngine::run_intent_formatting(const std::string& corrected_text) {
     notify_state_change(prev, EngineState::Outputting, "LLM complete");
 
     notify_llm_output(corrected_text, corrected_text, formatted,
-                      current_intent_, false);
+                      intent, false);
 
     state_machine_.transition_to(EngineState::Idle);
     notify_state_change(EngineState::Outputting, EngineState::Idle);
@@ -442,6 +465,39 @@ void VoiceEngine::drain_audio_and_recognize() {
     std::vector<float> chunk(available);
     std::size_t read = rb.read(chunk.data(), available);
     chunk.resize(read);
+
+    // DEBUG: save audio to WAV file for diagnostics
+    {
+        std::ofstream wav("debug_recording.wav", std::ios::binary);
+        int sr = config_.audio.sample_rate;
+        int bits = 16;
+        int data_size = static_cast<int>(read * 2);
+        wav.write("RIFF", 4);
+        int32_t file_size = 36 + data_size;
+        wav.write(reinterpret_cast<const char*>(&file_size), 4);
+        wav.write("WAVE", 4);
+        wav.write("fmt ", 4);
+        int32_t fmt_size = 16;
+        wav.write(reinterpret_cast<const char*>(&fmt_size), 4);
+        int16_t audio_fmt = 1;
+        wav.write(reinterpret_cast<const char*>(&audio_fmt), 2);
+        int16_t ch = 1;
+        wav.write(reinterpret_cast<const char*>(&ch), 2);
+        wav.write(reinterpret_cast<const char*>(&sr), 4);
+        int32_t byte_rate = sr * ch * bits / 8;
+        wav.write(reinterpret_cast<const char*>(&byte_rate), 4);
+        int16_t block_align = ch * bits / 8;
+        wav.write(reinterpret_cast<const char*>(&block_align), 2);
+        int16_t bps = bits;
+        wav.write(reinterpret_cast<const char*>(&bps), 2);
+        wav.write("data", 4);
+        wav.write(reinterpret_cast<const char*>(&data_size), 4);
+        for (auto s : chunk) {
+            int16_t pcm = static_cast<int16_t>(std::max(-1.0f, std::min(1.0f, s)) * 32767.0f);
+            wav.write(reinterpret_cast<const char*>(&pcm), 2);
+        }
+        spdlog::info("Saved debug_recording.wav ({} samples, {} Hz)", read, sr);
+    }
 
     spdlog::info("Drained {} samples ({:.1f}s) from ring buffer",
                   read,

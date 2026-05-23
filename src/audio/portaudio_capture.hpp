@@ -33,6 +33,7 @@ private:
     AudioRingBuffer ring_buffer_;
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    bool pa_initialized_ = false;
     AudioCallback user_callback_ = nullptr;
     void* user_data_ = nullptr;
     std::string selected_device_id_;
