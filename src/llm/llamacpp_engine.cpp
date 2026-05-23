@@ -194,7 +194,19 @@ LLMResponse LlamaCppEngine::do_inference(const LLMRequest& request,
     float elapsed_s = std::chrono::duration<float>(t1 - t0).count();
     float tps = elapsed_s > 0 ? static_cast<float>(n_decoded) / elapsed_s : 0.0f;
 
-    resp.text = output.str();
+    // Strip control tokens from output
+    std::string raw = output.str();
+    std::string filtered;
+    for (size_t i = 0; i < raw.size(); ) {
+        if (raw[i] == '<' && raw.find("<|", i) == i) {
+            // Skip until next '>'
+            while (i < raw.size() && raw[i] != '>') ++i;
+            if (i < raw.size()) ++i; // skip '>'
+        } else {
+            filtered += raw[i++];
+        }
+    }
+    resp.text = filtered;
     resp.prompt_tokens = prompt_token_count;
     resp.completion_tokens = n_decoded;
     resp.tokens_per_second = tps;

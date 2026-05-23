@@ -30,27 +30,10 @@ static LRESULT CALLBACK hotkey_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 
         if (self) {
-            // wp contains the hotkey ID. We only registered one, but verify.
-            // The hotkey fires on key-down only by default.
-            // We manually track key state to support PTT (press and hold).
+            // Toggle mode: each hotkey press flips recording state
             auto* cb = self->get_callback();
             if (cb && *cb) {
-                (*cb)(true);  // key down
-                // Wait for the key to be released
-                MSG release_msg;
-                while (GetMessageW(&release_msg, nullptr, 0, 0)) {
-                    if (release_msg.message == WM_HOTKEY &&
-                        release_msg.wParam == static_cast<WPARAM>(wp)) {
-                        break;
-                    }
-                    SHORT state = GetAsyncKeyState(static_cast<int>(self->get_hotkey_vk()));
-                    if ((state & 0x8000) == 0) {
-                        if (*cb) (*cb)(false); // key up
-                        break;
-                    }
-                    TranslateMessage(&release_msg);
-                    DispatchMessageW(&release_msg);
-                }
+                self->toggle_ptt();
             }
         }
         return 0;
@@ -76,6 +59,13 @@ Win32HotkeyManager::Win32HotkeyManager()
 
 HotkeyCallback* Win32HotkeyManager::get_callback() { return &impl_->callback; }
 unsigned Win32HotkeyManager::get_hotkey_vk() const { return impl_->hotkey_vk; }
+
+void Win32HotkeyManager::toggle_ptt() {
+    ptt_active_ = !ptt_active_;
+    if (impl_->callback) {
+        impl_->callback(ptt_active_);
+    }
+}
 
 Win32HotkeyManager::~Win32HotkeyManager() {
     unregister_hotkey();

@@ -23,11 +23,13 @@ public:
     // Internal access for window proc (defined in .cpp)
     HotkeyCallback* get_callback();
     unsigned get_hotkey_vk() const;
+    void toggle_ptt();
 
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> ptt_active_{false};
     int hotkey_id_ = 1;
 };
 

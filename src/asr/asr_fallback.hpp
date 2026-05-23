@@ -33,6 +33,7 @@ inline ASRFallbackEngine::ASRFallbackEngine(std::unique_ptr<IASREngine> primary,
                                              std::unique_ptr<IASREngine> fallback)
     : primary_(std::move(primary)), fallback_(std::move(fallback))
 {
+    active_ = primary_ ? primary_.get() : fallback_.get();
 }
 
 inline bool ASRFallbackEngine::initialize(const ASREngineConfig& config) {

@@ -199,7 +199,7 @@ void VoiceEngine::ptt_press() {
         return;
     }
 
-    spdlog::debug("PTT: recording started ({} Hz, {} ch)",
+    spdlog::info("PTT: recording started ({} Hz, {} ch)",
                   config_.audio.sample_rate, config_.audio.channels);
 }
 
@@ -443,7 +443,7 @@ void VoiceEngine::drain_audio_and_recognize() {
     std::size_t read = rb.read(chunk.data(), available);
     chunk.resize(read);
 
-    spdlog::debug("Drained {} samples ({:.1f}s) from ring buffer",
+    spdlog::info("Drained {} samples ({:.1f}s) from ring buffer",
                   read,
                   static_cast<float>(read) / static_cast<float>(config_.audio.sample_rate));
 

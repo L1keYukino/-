@@ -19,7 +19,7 @@ struct PortAudioCapture::Impl {
 // ─── Constructor / Destructor ───────────────────────────
 
 PortAudioCapture::PortAudioCapture()
-    : ring_buffer_(32000)  // 2 seconds at 16kHz mono
+    : ring_buffer_(44100 * 10)  // 10 seconds at 44.1kHz mono
     , impl_(std::make_unique<Impl>())
 {
 }
@@ -70,18 +70,29 @@ bool PortAudioCapture::select_device(const std::string& device_id) {
 static int pa_callback(const void* input, void* /*output*/,
                        unsigned long frame_count,
                        const PaStreamCallbackTimeInfo* /*time*/,
-                       PaStreamCallbackFlags /*flags*/,
+                       PaStreamCallbackFlags flags,
                        void* user_data)
 {
     auto* self = static_cast<PortAudioCapture*>(user_data);
     const float* samples = static_cast<const float*>(input);
 
-    if (samples && frame_count > 0) {
-        self->ring_buffer().write(samples, frame_count * self->channels());
+    if (flags & paInputUnderflow) {
+        std::fprintf(stderr, "[PortAudio] input underflow\n");
+    }
+    if (flags & paInputOverflow) {
+        std::fprintf(stderr, "[PortAudio] input overflow\n");
     }
 
-    // Fire user callback if set
-    // (user_callback_ and user_data_ are private; access via friend or public method)
+    if (samples && frame_count > 0) {
+        std::size_t total = frame_count * static_cast<std::size_t>(self->channels());
+        std::size_t written = self->ring_buffer().write(samples, total);
+        static int call_count = 0;
+        if (++call_count <= 3) {
+            std::fprintf(stderr, "[PortAudio] callback #%d: %lu frames, %zu/%zu samples written\n",
+                         call_count, frame_count, written, total);
+        }
+    }
+
     return paContinue;
 }
 #endif
@@ -148,7 +159,7 @@ void PortAudioCapture::stop() {
     Pa_Terminate();
 #endif
 
-    ring_buffer_.reset();
+    // ring buffer intentionally NOT reset — caller drains it after stop()
 }
 
 bool PortAudioCapture::is_running() const {

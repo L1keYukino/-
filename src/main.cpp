@@ -8,6 +8,10 @@
 #include <thread>
 #include <spdlog/spdlog.h>
 
+#ifdef _WIN32
+  #include <windows.h>
+#endif
+
 namespace {
 
 vim::VoiceEngine* g_engine = nullptr;
@@ -53,6 +57,12 @@ struct AutoTypeObserver : public vim::IEngineObserver {
 } // anonymous namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // Set console to UTF-8 to avoid garbled Chinese output
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
     spdlog::set_level(spdlog::level::info);
 
     spdlog::info("=== Voice Input Method v0.3.0 ===");
@@ -117,11 +127,12 @@ int main(int argc, char** argv) {
         // Register PTT hotkey
         vim::HotkeyMod mods = vim::HotkeyMod::Ctrl | vim::HotkeyMod::Alt;
         bool hk_ok = hotkey->register_hotkey(mods, config.mode.ptt_hotkey.virtual_key,
-            [&engine](bool key_down) {
-                if (key_down) {
-                    spdlog::info("PTT: recording...");
+            [&engine](bool start_recording) {
+                if (start_recording) {
+                    spdlog::info("PTT: recording started (speak now)");
                     engine.ptt_press();
                 } else {
+                    spdlog::info("PTT: recording stopped (processing)");
                     engine.ptt_release();
                 }
             });

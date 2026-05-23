@@ -77,12 +77,21 @@ void SherpaOnnxASR::process_audio(const float* samples, std::size_t count) {
 }
 
 void SherpaOnnxASR::end_utterance() {
-    if (!ready_.load() || accumulated_samples_.empty()) return;
+    spdlog::info("SherpaOnnxASR::end_utterance() called, ready={}, samples={}",
+                 ready_.load(), accumulated_samples_.size());
+    if (!ready_.load() || accumulated_samples_.empty()) {
+        spdlog::warn("SherpaOnnxASR: skipping — ready={}, samples={}",
+                     ready_.load(), accumulated_samples_.size());
+        return;
+    }
 
 #if VIM_HAS_SHERPA_ONNX
     if (!impl_->stream) return;
 
     auto t0 = std::chrono::steady_clock::now();
+
+    spdlog::info("SherpaOnnxASR: decoding {} samples at {} Hz...",
+                 accumulated_samples_.size(), sample_rate_);
 
     SherpaOnnxAcceptWaveformOffline(
         impl_->stream, sample_rate_,
@@ -93,6 +102,9 @@ void SherpaOnnxASR::end_utterance() {
 
     const SherpaOnnxOfflineRecognizerResult* result =
         SherpaOnnxGetOfflineStreamResult(impl_->stream);
+
+    spdlog::info("SherpaOnnxASR: result={}, text={}",
+                 (const void*)result, result && result->text ? result->text : "(null)");
 
     auto t1 = std::chrono::steady_clock::now();
     float elapsed_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
