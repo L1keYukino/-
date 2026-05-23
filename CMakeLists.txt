@@ -41,6 +41,21 @@ if(VIM_USE_PORTAUDIO)
     FetchContent_MakeAvailable(portaudio)
 endif()
 
+# llama.cpp (local LLM inference) — pre-cloned in models/llama.cpp
+option(VIM_USE_LLAMACPP "Build llama.cpp LLM backend" ON)
+if(VIM_USE_LLAMACPP AND EXISTS "${CMAKE_SOURCE_DIR}/models/llama.cpp/CMakeLists.txt")
+    set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${CMAKE_SOURCE_DIR}/models/llama.cpp"
+                     "${CMAKE_BINARY_DIR}/_deps/llama-build"
+                     EXCLUDE_FROM_ALL)
+    message(STATUS "llama.cpp: using local clone in models/")
+elseif(VIM_USE_LLAMACPP)
+    message(STATUS "llama.cpp: not found — run: git clone --depth 1 --branch b4927 https://github.com/ggml-org/llama.cpp.git models/llama.cpp")
+endif()
+
 # ─── Library target ─────────────────────────────────────
 add_subdirectory(src)
 

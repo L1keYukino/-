@@ -66,3 +66,16 @@ set_project_warnings(voice_input_method_app)
 target_compile_options(voice_input_method_app PRIVATE
     $<$<CXX_COMPILER_ID:GNU>:-Wno-sign-conversion>
 )
+
+# llama.cpp — conditionally linked (local clone in models/llama.cpp)
+if(TARGET llama)
+    target_link_libraries(voice_input_method PRIVATE llama)
+    target_include_directories(voice_input_method PRIVATE
+        "${CMAKE_SOURCE_DIR}/models/llama.cpp/include"
+        "${CMAKE_SOURCE_DIR}/models/llama.cpp"
+        "${CMAKE_BINARY_DIR}/_deps/llama-build"
+    )
+    message(STATUS "llama.cpp: linked from models/llama.cpp")
+else()
+    message(STATUS "llama.cpp: not available — LLM stub mode")
+endif()
