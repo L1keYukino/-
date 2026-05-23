@@ -41,6 +41,13 @@ public:
         return turns;
     }
 
+    int estimated_tokens() const {
+        int total = 0;
+        for (const auto& m : history_)
+            total += static_cast<int>(m.content.size()) / 3;
+        return total;
+    }
+
 private:
     void prune() {
         // Remove oldest turns until within limits
@@ -54,13 +61,6 @@ private:
             history_.erase(history_.begin());
             history_.erase(history_.begin());
         }
-    }
-
-    int estimated_tokens() const {
-        int total = 0;
-        for (const auto& m : history_)
-            total += static_cast<int>(m.content.size()) / 3; // rough CJK-aware estimate
-        return total;
     }
 
     std::vector<LLMMessage> history_;

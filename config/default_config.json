@@ -19,6 +19,7 @@
     "app_id": "",
     "api_key": "",
     "api_secret": "",
+    "endpoint_url": "wss://iat-api.xfyun.cn/v2/iat",
     "enabled": false
   },
   "llm_primary": {

@@ -1,4 +1,3 @@
-# Collect all sources
 file(GLOB_RECURSE VIM_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
 )
@@ -11,8 +10,22 @@ target_include_directories(voice_input_method
         "${CMAKE_SOURCE_DIR}"
 )
 
-# Phase 1: no external dependencies (pure std C++)
-# Phase 2+: target_link_libraries(voice_input_method PUBLIC nlohmann_json::nlohmann_json spdlog::spdlog)
+target_link_libraries(voice_input_method
+    PUBLIC
+        nlohmann_json::nlohmann_json
+        spdlog::spdlog
+)
+
+# PortAudio — conditionally linked
+if(VIM_USE_PORTAUDIO AND TARGET PortAudio)
+    target_link_libraries(voice_input_method PRIVATE PortAudio)
+    target_compile_definitions(voice_input_method PRIVATE VIM_HAS_PORTAUDIO=1)
+endif()
 
 include("${CMAKE_SOURCE_DIR}/cmake/CompilerWarnings.cmake")
 set_project_warnings(voice_input_method)
+
+# Turn off sign-conversion warnings (too noisy with external API types)
+target_compile_options(voice_input_method PRIVATE
+    $<$<CXX_COMPILER_ID:GNU>:-Wno-sign-conversion>
+)

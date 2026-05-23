@@ -1,7 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include "src/config/config.hpp"
+#include <string>
 
 namespace vim {
+
+static std::string cfg_path(const char* rel) {
+    return std::string(PROJECT_SOURCE_DIR) + "/" + rel;
+}
 
 TEST_CASE("make_default_config produces valid config", "[config]") {
     auto cfg = make_default_config();
@@ -56,7 +61,7 @@ TEST_CASE("validate_config catches bad values", "[config]") {
 }
 
 TEST_CASE("default_config.json can be parsed", "[config]") {
-    auto cfg = load_config_from_file("config/default_config.json");
+    auto cfg = load_config_from_file(cfg_path("config/default_config.json").c_str());
     REQUIRE(cfg.audio.backend == "portaudio");
     REQUIRE(cfg.audio.sample_rate == 16000);
     REQUIRE(cfg.audio.channels == 1);
@@ -72,8 +77,8 @@ TEST_CASE("config round-trip through JSON", "[config]") {
     cfg.audio.sample_rate = 44100;
     cfg.default_intent = IntentType::Email;
 
-    save_config_to_file("config/test_roundtrip.json", cfg);
-    auto loaded = load_config_from_file("config/test_roundtrip.json");
+    save_config_to_file(cfg_path("config/test_roundtrip.json").c_str(), cfg);
+    auto loaded = load_config_from_file(cfg_path("config/test_roundtrip.json").c_str());
 
     REQUIRE(loaded.audio.sample_rate == 44100);
     REQUIRE(loaded.default_intent == IntentType::Email);
@@ -81,7 +86,7 @@ TEST_CASE("config round-trip through JSON", "[config]") {
 }
 
 TEST_CASE("intent parsing from JSON", "[config]") {
-    auto cfg = load_config_from_file("config/default_config.json");
+    auto cfg = load_config_from_file(cfg_path("config/default_config.json").c_str());
     REQUIRE(cfg.default_intent == IntentType::General);
 
     // enabled_intents should include all six
