@@ -51,6 +51,7 @@ bool LlamaCppEngine::initialize(const std::string& model_path,
     ggml_backend_load_all();
 
     llama_model_params mparams = llama_model_default_params();
+    mparams.use_mmap = false; // work around PrefetchVirtualMemory issue on some Windows builds
     impl_->model = llama_model_load_from_file(model_path.c_str(), mparams);
     if (!impl_->model) {
         spdlog::error("llama.cpp: failed to load model from {}", model_path);
