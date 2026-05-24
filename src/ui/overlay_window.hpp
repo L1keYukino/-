@@ -16,6 +16,7 @@ public:
 
     bool create(HINSTANCE hinst);
     void destroy();
+    void set_pure_mode(bool on) { pure_mode_ = on; InvalidateRect(hwnd_, nullptr, FALSE); }
     void show_idle();
     void show_recording();
     void show_processing(const std::string& text);
@@ -36,6 +37,7 @@ private:
     ULONG_PTR gdiplus_token_ = 0;
     int hide_generation_ = 0;
     short drag_x_ = 0, drag_y_ = 0;
+    bool pure_mode_ = false; // true=纯转录蓝色点, false=LLM白色点
 };
 
 } // namespace vim

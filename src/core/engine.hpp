@@ -49,6 +49,7 @@ public:
 
     // ─── Intent control ─────────────────────────────────
     void set_intent(IntentType intent);
+    void set_llm_bypass(bool bypass) { llm_bypass_ = bypass; }
 
     // ─── State ──────────────────────────────────────────
     EngineState state() const;
@@ -113,6 +114,7 @@ private:
     std::atomic<bool> ptt_active_{false};
     std::atomic<bool> running_{false};
     std::atomic<bool> segment_active_{false};
+    std::atomic<bool> llm_bypass_{false};
 };
 
 } // namespace vim

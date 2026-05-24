@@ -66,6 +66,7 @@ struct HotkeyConfig {
 struct ModeConfig {
     EngineMode  mode = EngineMode::PTT;
     HotkeyConfig ptt_hotkey;
+    HotkeyConfig mode_hotkey = {3, 'B'}; // Ctrl+Alt+B
     int         continuous_vad_silence_ms = 800;
     int         continuous_max_segment_ms = 30000;
 };

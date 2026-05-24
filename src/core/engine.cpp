@@ -375,6 +375,18 @@ void VoiceEngine::on_recognition_result(const ASRResult& result) {
     // Let LLM decide output format — no keyword hack
     IntentType effective_intent = current_intent_;
 
+    // Bypass LLM for pure transcription mode
+    if (llm_bypass_.load()) {
+        spdlog::info("LLM bypass: outputting raw ASR text");
+        auto prev = state_machine_.state();
+        state_machine_.transition_to(EngineState::Outputting);
+        notify_state_change(prev, EngineState::Outputting, "Pure transcription");
+        notify_llm_output(result.text, result.text, result.text, current_intent_, false);
+        state_machine_.transition_to(EngineState::Idle);
+        notify_state_change(EngineState::Outputting, EngineState::Idle);
+        return;
+    }
+
     // Cloud LLM: skip error correction, send raw ASR directly (it's smart enough)
     if (cloud_llm_ && cloud_llm_->is_ready()) {
         spdlog::info("Using cloud LLM for smart processing...");

@@ -24,7 +24,8 @@ vim::EngineConfig*     g_config  = nullptr;
 
 std::string g_last_formatted;
 bool g_recording = false;
-bool g_processing = false; // lock during ASR+LLM pipeline
+bool g_processing = false;
+bool g_llm_mode = true;  // true=LLM整理, false=纯转录
 
 void toggle_recording() {
     if (!g_engine) return;
@@ -71,9 +72,9 @@ struct UIObserver : public vim::IEngineObserver {
     }
 
     void on_transcription(const vim::TranscriptionEvent& ev) override {
-        if (!ev.is_partial) {
+        if (!ev.is_partial && g_overlay && g_llm_mode) {
             spdlog::info("[asr] '{}'", ev.text);
-            if (g_overlay) g_overlay->show_processing(ev.text);
+            g_overlay->show_processing(ev.text);
         }
     }
 
@@ -123,20 +124,30 @@ LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (wp == TIMER_HOTKEY && g_config) {
             auto& hk = g_config->mode.ptt_hotkey;
+
+            // Mode toggle hotkey (from config)
+            auto& mh = g_config->mode.mode_hotkey;
+            static bool mt_held = false;
+            bool mc = (mh.modifiers&2)==0||(GetAsyncKeyState(VK_CONTROL)&0x8000);
+            bool ma = (mh.modifiers&1)==0||(GetAsyncKeyState(VK_MENU)&0x8000);
+            bool ms = (mh.modifiers&4)==0||(GetAsyncKeyState(VK_SHIFT)&0x8000);
+            bool mw = (mh.modifiers&8)==0||(GetAsyncKeyState(VK_LWIN)&0x8000||GetAsyncKeyState(VK_RWIN)&0x8000);
+            bool mk = (GetAsyncKeyState(mh.virtual_key)&0x8000)!=0;
+            if (mc && ma && ms && mw && mk && !mt_held) {
+                mt_held = true;
+                g_llm_mode = !g_llm_mode;
+                g_engine->set_llm_bypass(!g_llm_mode);
+                if (g_overlay) g_overlay->set_pure_mode(!g_llm_mode);
+            } else if (!mk) { mt_held = false; }
+
+            // PTT hotkey
             uint32_t mods = hk.modifiers;
             uint32_t vk = hk.virtual_key;
-
-            // Check modifiers
             bool ctrl = (mods & 2) == 0 || (GetAsyncKeyState(VK_CONTROL) & 0x8000);
             bool alt  = (mods & 1) == 0 || (GetAsyncKeyState(VK_MENU) & 0x8000);
             bool shift = (mods & 4) == 0 || (GetAsyncKeyState(VK_SHIFT) & 0x8000);
             bool win  = (mods & 8) == 0 || (GetAsyncKeyState(VK_LWIN) & 0x8000 || GetAsyncKeyState(VK_RWIN) & 0x8000);
-
-            bool key_down = false;
-            if (vk == VK_XBUTTON1 || vk == VK_XBUTTON2 || vk == VK_MBUTTON || vk == VK_RBUTTON)
-                key_down = (GetAsyncKeyState(vk) & 0x8000) != 0;
-            else
-                key_down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+            bool key_down = (GetAsyncKeyState(vk) & 0x8000) != 0;
 
             if (ctrl && alt && shift && win && !g_ptt_held && !g_processing && key_down) {
                 g_ptt_held = true;

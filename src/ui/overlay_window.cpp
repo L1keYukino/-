@@ -104,16 +104,19 @@ void OverlayWindow::paint(HDC hdc) {
     int cy = BAR_MAX + DOT_R + PAD; // center y of dots
     int start_x = PAD + DOT_R;
 
+    ARGB dot_color = pure_mode_ ? 0xC8FFFFFF : 0xC8FFFFFF; // cyan vs white
+    Color idleClr(pure_mode_ ? 200 : 200, pure_mode_ ? 150 : 255, pure_mode_ ? 255 : 255, 255);
+
     if (state_ == 0) {
-        // Idle: bright dots for visibility
-        SolidBrush dot(Color(200, 255, 255, 255));
+        SolidBrush dot(idleClr);
         for (int i = 0; i < N_DOTS; ++i) {
             int cx = start_x + i * (DOT_R*2 + GAP);
             g.FillEllipse(&dot, cx - DOT_R, cy - DOT_R, DOT_R*2, DOT_R*2);
         }
     } else if (state_ == 1) {
         float level = std::max(0.0f, std::min(1.0f, (db_ + 48.0f) / 30.0f));
-        SolidBrush white(Color(240, 255, 255, 255));
+        Color recClr(240, pure_mode_ ? 150 : 255, pure_mode_ ? 255 : 255, 255);
+        SolidBrush white(recClr);
 
         for (int i = 0; i < N_DOTS; ++i) {
             int cx = start_x + i * (DOT_R*2 + GAP);
