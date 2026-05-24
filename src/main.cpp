@@ -4,6 +4,7 @@
 #include "src/ui/tray_icon.hpp"
 #include "src/ui/overlay_window.hpp"
 #include "src/ui/settings_dialog.hpp"
+#include <fstream>
 #include <thread>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -57,11 +58,11 @@ struct UIObserver : public vim::IEngineObserver {
         else if (ev.new_state == vim::EngineState::Recognizing) {
             g_recording = false;
             g_processing = true;
-            if (g_overlay) g_overlay->hide();
         }
         else if (ev.new_state == vim::EngineState::Idle) {
             g_processing = false;
             g_recording = false;
+            if (g_overlay) g_overlay->show_idle();
         }
     }
 
@@ -110,6 +111,7 @@ struct UIObserver : public vim::IEngineObserver {
 static const wchar_t* MAIN_WINDOW_CLASS = L"VIM_MainWindow";
 static constexpr UINT WM_TRAYICON = WM_APP + 1;
 static constexpr UINT TIMER_VU = 1;
+static constexpr UINT TIMER_HOTKEY = 2;
 static bool g_ptt_held = false;
 
 LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -119,41 +121,41 @@ LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* audio = g_engine->audio_capture();
             if (audio) g_overlay->set_audio_level(audio->peak_db());
         }
-        return 0;
-        if (LOWORD(lp) == WM_LBUTTONUP) {
-            // Toggle on left-click (tray fallback)
-            if (!g_ptt_held) {
-                if (!g_recording && !g_processing) g_engine->ptt_press();
-                else if (g_recording) g_engine->ptt_release();
+        if (wp == TIMER_HOTKEY && g_config) {
+            auto& hk = g_config->mode.ptt_hotkey;
+            uint32_t mods = hk.modifiers;
+            uint32_t vk = hk.virtual_key;
+
+            // Check modifiers
+            bool ctrl = (mods & 2) == 0 || (GetAsyncKeyState(VK_CONTROL) & 0x8000);
+            bool alt  = (mods & 1) == 0 || (GetAsyncKeyState(VK_MENU) & 0x8000);
+            bool shift = (mods & 4) == 0 || (GetAsyncKeyState(VK_SHIFT) & 0x8000);
+            bool win  = (mods & 8) == 0 || (GetAsyncKeyState(VK_LWIN) & 0x8000 || GetAsyncKeyState(VK_RWIN) & 0x8000);
+
+            bool key_down = false;
+            if (vk == VK_XBUTTON1 || vk == VK_XBUTTON2 || vk == VK_MBUTTON || vk == VK_RBUTTON)
+                key_down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+            else
+                key_down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+
+            if (ctrl && alt && shift && win && !g_ptt_held && !g_processing && key_down) {
+                g_ptt_held = true;
+                g_engine->ptt_press();
+                SetTimer(hwnd, TIMER_VU, 8, nullptr);
+            } else if (g_ptt_held && !key_down) {
+                KillTimer(hwnd, TIMER_VU);
+                g_ptt_held = false;
+                if (g_recording) g_engine->ptt_release();
             }
-        } else if (LOWORD(lp) == WM_RBUTTONUP) {
+        }
+        return 0;
+    case WM_TRAYICON:
+        if (LOWORD(lp) == WM_RBUTTONUP) {
             if (g_tray) g_tray->show_menu();
         }
         return 0;
     case WM_HOTKEY:
-        if (g_ptt_held) return 0;
-        g_ptt_held = true;
-        if (!g_processing) {
-            g_engine->ptt_press();
-            timeBeginPeriod(1);
-            SetTimer(hwnd, TIMER_VU, 8, nullptr);
-        }
-
-        {
-            UINT vk = static_cast<UINT>(lp) >> 16;
-            while (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) {
-                Sleep(30);
-                MSG m;
-                while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
-                    TranslateMessage(&m);
-                    DispatchMessageW(&m);
-                }
-            }
-            KillTimer(hwnd, TIMER_VU);
-            g_ptt_held = false;
-            if (g_recording) g_engine->ptt_release();
-        }
-        return 0;
+        return 0; // no longer used, kept for compatibility
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -225,35 +227,40 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int) {
         });
         tray.set_left_click_callback([]() { toggle_recording(); });
         tray.set_menu_settings_callback([hwnd, hInstance]() {
-            if (g_config) show_settings_dialog(hInstance, hwnd, *g_config);
+            if (g_config) show_settings_dialog(hInstance, hwnd, hwnd, *g_config);
         });
     } else {
         // Keep the engine alive with a simple message pump
         tray.set_menu_quit_callback([]() { PostQuitMessage(0); });
     }
 
-    // ─── Overlay window (skip in json mode) ─────────────
+    // ─── Overlay window ─────────────────────────────────
+    bool show_viz = true;
+    {
+        std::ifstream f("config/show_viz.txt");
+        if (f) { char c; f >> c; show_viz = (c == '1'); }
+    }
+    spdlog::info("show_viz={}, g_json_mode={}", show_viz, g_json_mode);
     vim::OverlayWindow overlay;
-    if (!g_json_mode) {
+    if (!g_json_mode && show_viz) {
         if (overlay.create(hInstance)) {
             g_overlay = &overlay;
-            spdlog::info("Overlay window created");
+            g_overlay->show_idle();
+            spdlog::info("Overlay: created and visible");
         } else {
-            spdlog::error("Overlay window creation failed");
+            spdlog::error("Overlay: create() returned false");
         }
+    } else {
+        spdlog::info("Overlay: skipped (show_viz={}, json={})", show_viz, g_json_mode);
     }
 
     // ─── Observer ───────────────────────────────────────
     auto obs = std::make_shared<UIObserver>();
     engine.add_observer(obs);
 
-    // ─── Hotkey (registered directly on main window) ────
-    UINT hotkey_mods = MOD_CONTROL | MOD_ALT;
-    if (RegisterHotKey(hwnd, 1, hotkey_mods, config.mode.ptt_hotkey.virtual_key)) {
-        spdlog::info("Hotkey Ctrl+Alt+V registered on main window");
-    } else {
-        spdlog::error("RegisterHotKey failed: {}", GetLastError());
-    }
+    // ─── Hotkey: polling-based (supports keyboard + mouse) ────
+    timeBeginPeriod(1);
+    SetTimer(hwnd, TIMER_HOTKEY, 30, nullptr); // 30ms polling
 
     // ─── Start engine ───────────────────────────────────
     engine.start();

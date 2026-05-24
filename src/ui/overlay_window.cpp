@@ -46,7 +46,7 @@ bool OverlayWindow::create(HINSTANCE hinst) {
     int sh = GetSystemMetrics(SM_CYSCREEN);
 
     hwnd_ = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
         CLASS_NAME, L"", WS_POPUP,
         sw - WIN_W - 30, sh - WIN_H - 80, WIN_W, WIN_H,
         nullptr, nullptr, hinst, this);
@@ -65,8 +65,11 @@ void OverlayWindow::destroy() {
     if (gdiplus_token_) { GdiplusShutdown(gdiplus_token_); gdiplus_token_ = 0; }
 }
 
+void OverlayWindow::show_idle() {
+    state_ = 0; ShowWindow(hwnd_, SW_SHOW); InvalidateRect(hwnd_, nullptr, FALSE);
+}
 void OverlayWindow::show_recording() {
-    hide_generation_++; // cancel any pending hide
+    hide_generation_++;
     state_ = 1; ShowWindow(hwnd_, SW_SHOW); InvalidateRect(hwnd_, nullptr, FALSE);
 }
 void OverlayWindow::show_processing(const std::string&) {
@@ -101,7 +104,14 @@ void OverlayWindow::paint(HDC hdc) {
     int cy = BAR_MAX + DOT_R + PAD; // center y of dots
     int start_x = PAD + DOT_R;
 
-    if (state_ == 1) {
+    if (state_ == 0) {
+        // Idle: bright dots for visibility
+        SolidBrush dot(Color(200, 255, 255, 255));
+        for (int i = 0; i < N_DOTS; ++i) {
+            int cx = start_x + i * (DOT_R*2 + GAP);
+            g.FillEllipse(&dot, cx - DOT_R, cy - DOT_R, DOT_R*2, DOT_R*2);
+        }
+    } else if (state_ == 1) {
         float level = std::max(0.0f, std::min(1.0f, (db_ + 48.0f) / 30.0f));
         SolidBrush white(Color(240, 255, 255, 255));
 
@@ -162,6 +172,25 @@ LRESULT CALLBACK OverlayWindow::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         DeleteDC(memDC);
         EndPaint(hwnd, &ps); return 0;
     }
+    case WM_LBUTTONDOWN:
+        SetCapture(hwnd);
+        self->drag_x_ = static_cast<short>(LOWORD(lp));
+        self->drag_y_ = static_cast<short>(HIWORD(lp));
+        return 0;
+    case WM_MOUSEMOVE:
+        if (GetCapture() == hwnd && (wp & MK_LBUTTON)) {
+            short nx = static_cast<short>(LOWORD(lp));
+            short ny = static_cast<short>(HIWORD(lp));
+            RECT r; GetWindowRect(hwnd, &r);
+            SetWindowPos(hwnd, nullptr,
+                r.left + nx - self->drag_x_,
+                r.top + ny - self->drag_y_,
+                0, 0, SWP_NOSIZE | SWP_NOZORDER);
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        ReleaseCapture();
+        return 0;
     case WM_ERASEBKGND: return 1;
     case WM_DESTROY: return 0;
     }

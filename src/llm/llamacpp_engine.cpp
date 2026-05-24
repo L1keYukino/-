@@ -119,13 +119,13 @@ LLMResponse LlamaCppEngine::do_inference(const LLMRequest& request,
     std::ostringstream prompt;
     for (const auto& msg : request.messages) {
         if (msg.role == "system")
-            prompt << "<|system|>\n" << msg.content << "<|end|>\n";
+            prompt << "<|im_start|>system\n" << msg.content << "<|im_end|>\n";
         else if (msg.role == "user")
-            prompt << "<|user|>\n" << msg.content << "<|end|>\n";
+            prompt << "<|im_start|>user\n" << msg.content << "<|im_end|>\n";
         else if (msg.role == "assistant")
-            prompt << "<|assistant|>\n" << msg.content << "<|end|>\n";
+            prompt << "<|im_start|>assistant\n" << msg.content << "<|im_end|>\n";
     }
-    prompt << "<|assistant|>\n";
+    prompt << "<|im_start|>assistant\n";
 
     std::string full_prompt = prompt.str();
 

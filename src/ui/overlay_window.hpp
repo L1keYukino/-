@@ -16,6 +16,7 @@ public:
 
     bool create(HINSTANCE hinst);
     void destroy();
+    void show_idle();
     void show_recording();
     void show_processing(const std::string& text);
     void show_result(const std::string& text);
@@ -33,7 +34,8 @@ private:
     float dot_sens_[9];
     HINSTANCE hinst_ = nullptr;
     ULONG_PTR gdiplus_token_ = 0;
-    int hide_generation_ = 0; // cancel stale hide threads
+    int hide_generation_ = 0;
+    short drag_x_ = 0, drag_y_ = 0;
 };
 
 } // namespace vim

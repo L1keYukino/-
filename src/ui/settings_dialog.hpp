@@ -9,7 +9,7 @@ namespace vim {
 
 struct EngineConfig;
 
-// Win32 modal dialog for settings
-bool show_settings_dialog(HINSTANCE hinst, HWND parent, EngineConfig& config);
+// Win32 modal dialog for settings. Pass main HWND for hotkey unregister.
+bool show_settings_dialog(HINSTANCE hinst, HWND parent, HWND main_hwnd, EngineConfig& config);
 
 } // namespace vim
