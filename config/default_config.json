@@ -24,8 +24,8 @@
   },
   "llm_primary": {
     "type": "llama_cpp",
-    "model_path": "./models/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    "n_ctx": 2048,
+    "model_path": "./models/qwen2.5-3b-instruct-q4_k_m.gguf",
+    "n_ctx": 4096,
     "n_threads": 4,
     "n_gpu_layers": 0,
     "temperature": 0.1,
@@ -53,7 +53,15 @@
     "continuous_max_segment_ms": 30000
   },
   "default_intent": "general",
-  "enabled_intents": ["general", "email", "chat", "code_comment", "documentation", "command", "summary"],
+  "enabled_intents": [
+    "general",
+    "email",
+    "chat",
+    "code_comment",
+    "documentation",
+    "command",
+    "summary"
+  ],
   "max_context_turns": 5,
   "enable_error_correction": true
 }

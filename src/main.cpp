@@ -16,6 +16,7 @@ namespace {
 
 vim::VoiceEngine*      g_engine  = nullptr;
 vim::SendInputOutput*  g_output  = nullptr;
+bool                    g_json_mode = false;
 vim::TrayIcon*         g_tray    = nullptr;
 vim::OverlayWindow*    g_overlay = nullptr;
 vim::EngineConfig*     g_config  = nullptr;
@@ -40,29 +41,27 @@ struct UIObserver : public vim::IEngineObserver {
     void on_state_change(const vim::StateChangeEvent& ev) override {
         spdlog::info("[state] {} → {}", vim::engine_state_name(ev.old_state),
                      vim::engine_state_name(ev.new_state));
+        if (g_json_mode) {
+            auto f = fopen("vim_events.jsonl", "a");
+            if (f) {
+                fprintf(f, "{\"event\":\"state\",\"old\":%d,\"new\":%d}\n",
+                        static_cast<int>(ev.old_state), static_cast<int>(ev.new_state));
+                fclose(f);
+            }
+        }
 
         if (ev.new_state == vim::EngineState::Listening) {
             g_recording = true;
-            if (g_tray)    g_tray->set_recording(true);
             if (g_overlay) g_overlay->show_recording();
         }
         else if (ev.new_state == vim::EngineState::Recognizing) {
             g_recording = false;
             g_processing = true;
-            if (g_tray) g_tray->set_recording(false);
-        }
-        else if (ev.new_state == vim::EngineState::Outputting) {
-            if (g_overlay) g_overlay->show_result(g_last_formatted);
+            if (g_overlay) g_overlay->hide();
         }
         else if (ev.new_state == vim::EngineState::Idle) {
             g_processing = false;
             g_recording = false;
-            if (g_tray)    g_tray->set_recording(false);
-            // Delay hide so user can see the result/silent notification
-            std::thread([]() {
-                Sleep(1500);
-                if (g_overlay) g_overlay->hide();
-            }).detach();
         }
     }
 
@@ -71,9 +70,6 @@ struct UIObserver : public vim::IEngineObserver {
     }
 
     void on_transcription(const vim::TranscriptionEvent& ev) override {
-        if (ev.is_partial && g_overlay)
-            g_overlay->set_asr_text(ev.text);
-
         if (!ev.is_partial) {
             spdlog::info("[asr] '{}'", ev.text);
             if (g_overlay) g_overlay->show_processing(ev.text);
@@ -83,6 +79,21 @@ struct UIObserver : public vim::IEngineObserver {
     void on_llm_output(const vim::LLMOutputEvent& ev) override {
         spdlog::info("[llm] '{}'", ev.formatted_text);
         g_last_formatted = ev.formatted_text;
+        if (g_json_mode) {
+            auto f = fopen("vim_events.jsonl", "a");
+            if (f) {
+                // Escape quotes in text
+                std::string escaped;
+                for (char c : ev.formatted_text) {
+                    if (c == '"') escaped += "\\\"";
+                    else if (c == '\\') escaped += "\\\\";
+                    else if (c == '\n') escaped += "\\n";
+                    else escaped += c;
+                }
+                fprintf(f, "{\"event\":\"llm\",\"text\":\"%s\"}\n", escaped.c_str());
+                fclose(f);
+            }
+        }
 
         if (g_output && !ev.formatted_text.empty()) {
             g_output->type_text(ev.formatted_text);
@@ -124,7 +135,8 @@ LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_ptt_held = true;
         if (!g_processing) {
             g_engine->ptt_press();
-            SetTimer(hwnd, TIMER_VU, 80, nullptr);
+            timeBeginPeriod(1);
+            SetTimer(hwnd, TIMER_VU, 8, nullptr);
         }
 
         {
@@ -151,7 +163,8 @@ LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 } // anonymous namespace
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int) {
+    g_json_mode = lpCmdLine && strstr(lpCmdLine, "--json");
     // Log to file since this is a GUI app (no console)
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("vim.log", true);
     auto logger = std::make_shared<spdlog::logger>("vim", file_sink);
@@ -195,30 +208,40 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
                                  WS_OVERLAPPED, 0, 0, 0, 0,
                                  nullptr, nullptr, hInstance, nullptr);
 
-    // ─── Tray icon ──────────────────────────────────────
+    // ─── Tray icon (skip in json mode) ──────────────────
     vim::TrayIcon tray;
-    g_tray = &tray;
-    tray.create(hInstance, hwnd);
+    if (!g_json_mode) {
+        g_tray = &tray;
+        tray.create(hInstance, hwnd);
+        tray.set_menu_start_callback([]() {
+            if (!g_recording) toggle_recording();
+        });
+        tray.set_menu_stop_callback([]() {
+            if (g_recording) toggle_recording();
+        });
+        tray.set_menu_quit_callback([]() {
+            if (g_engine) { g_engine->stop(); g_engine->shutdown(); }
+            PostQuitMessage(0);
+        });
+        tray.set_left_click_callback([]() { toggle_recording(); });
+        tray.set_menu_settings_callback([hwnd, hInstance]() {
+            if (g_config) show_settings_dialog(hInstance, hwnd, *g_config);
+        });
+    } else {
+        // Keep the engine alive with a simple message pump
+        tray.set_menu_quit_callback([]() { PostQuitMessage(0); });
+    }
 
-    tray.set_menu_start_callback([]() {
-        if (!g_recording) toggle_recording();
-    });
-    tray.set_menu_stop_callback([]() {
-        if (g_recording) toggle_recording();
-    });
-    tray.set_menu_quit_callback([]() {
-        if (g_engine) { g_engine->stop(); g_engine->shutdown(); }
-        PostQuitMessage(0);
-    });
-    tray.set_left_click_callback([]() { toggle_recording(); });
-    tray.set_menu_settings_callback([hwnd, hInstance]() {
-        if (g_config) show_settings_dialog(hInstance, hwnd, *g_config);
-    });
-
-    // ─── Overlay window ─────────────────────────────────
+    // ─── Overlay window (skip in json mode) ─────────────
     vim::OverlayWindow overlay;
-    g_overlay = &overlay;
-    overlay.create(hInstance);
+    if (!g_json_mode) {
+        if (overlay.create(hInstance)) {
+            g_overlay = &overlay;
+            spdlog::info("Overlay window created");
+        } else {
+            spdlog::error("Overlay window creation failed");
+        }
+    }
 
     // ─── Observer ───────────────────────────────────────
     auto obs = std::make_shared<UIObserver>();

@@ -364,12 +364,8 @@ void VoiceEngine::on_recognition_result(const ASRResult& result) {
         if ((uc >= 0x80) || (uc >= 'a' && uc <= 'z') || (uc >= 'A' && uc <= 'Z'))
             meaningful++;
     }
-    if (result.text.size() < 8 && meaningful < 4) {
-        spdlog::warn("ASR text too short/silent — skipping LLM");
-        state_machine_.force_state(EngineState::Idle);
-        notify_state_change(EngineState::Recognizing, EngineState::Idle);
-        return;
-    }
+    // Always process — let LLM handle empty input too
+    (void)meaningful;
 
     auto prev = state_machine_.state();
     state_machine_.transition_to(EngineState::Correcting);

@@ -91,6 +91,18 @@ add_executable(voice_input_method_app WIN32
     "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp"
 )
 
+# ─── Shared library (DLL) for Python UI ─────────────────
+add_library(vim_engine SHARED
+    "${CMAKE_CURRENT_SOURCE_DIR}/engine_api.cpp"
+)
+
+target_link_libraries(vim_engine PRIVATE voice_input_method)
+
+if(MINGW)
+    target_link_options(vim_engine PRIVATE -static -static-libgcc -static-libstdc++)
+    target_link_libraries(vim_engine PRIVATE winhttp winmm ole32 uuid ksuser setupapi)
+endif()
+
 target_link_libraries(voice_input_method_app PRIVATE
     voice_input_method
 )
@@ -98,7 +110,7 @@ target_link_libraries(voice_input_method_app PRIVATE
 # Static linking to avoid DLL runtime dependencies
 if(MINGW)
     target_link_options(voice_input_method_app PRIVATE -static -static-libgcc -static-libstdc++)
-    target_link_libraries(voice_input_method_app PRIVATE winhttp)
+    target_link_libraries(voice_input_method_app PRIVATE winhttp gdiplus)
 endif()
 
 set_project_warnings(voice_input_method_app)

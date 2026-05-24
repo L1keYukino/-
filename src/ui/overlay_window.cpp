@@ -1,197 +1,169 @@
 #include "src/ui/overlay_window.hpp"
+#include <algorithm>
+#include <cstdlib>
 #include <spdlog/spdlog.h>
 
 namespace vim {
 
-static const wchar_t* OVERLAY_CLASS = L"VIM_OverlayWindow";
+using namespace Gdiplus;
 
-static std::wstring utf8_to_wide(const std::string& s) {
-    if (s.empty()) return L"";
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    std::wstring w(static_cast<std::size_t>(len), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], len);
-    w.resize(len - 1); // remove null terminator
-    return w;
+static const wchar_t* CLASS_NAME = L"VIM_OverlayV3";
+static const int N_DOTS   = 9;
+static const int DOT_R    = 4;
+static const int GAP      = 4;
+static const int BAR_MAX  = 80;  // taller
+static const int PAD      = 4;
+static const int WIN_W    = N_DOTS * (DOT_R*2 + GAP) - GAP + PAD*2;
+static const int WIN_H    = BAR_MAX + DOT_R*2 + PAD*2;
+
+OverlayWindow::OverlayWindow() {
+    for (int i = 0; i < N_DOTS; ++i) {
+        dot_sens_[i] = 1.0f;
+        dot_y_[i] = (float)(DOT_R * 2);
+    }
 }
-
-OverlayWindow::OverlayWindow() = default;
-
-OverlayWindow::~OverlayWindow() {
-    destroy();
-}
+OverlayWindow::~OverlayWindow() { destroy(); }
 
 bool OverlayWindow::create(HINSTANCE hinst) {
     hinst_ = hinst;
 
+    static bool gdi_ok = false;
+    if (!gdi_ok) {
+        GdiplusStartupInput gdi_in;
+        gdi_ok = (GdiplusStartup(&gdiplus_token_, &gdi_in, nullptr) == Ok);
+    }
+
     WNDCLASSEXW wc{};
-    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = hinst;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = CreateSolidBrush(bg_color_);
-    wc.lpszClassName = OVERLAY_CLASS;
-    RegisterClassExW(&wc);
+    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wc.lpszClassName = CLASS_NAME;
+    RegisterClassExW(&wc); // ignore error (may already exist)
 
-    // Bottom-right corner of screen
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
-    int x = sw - width_ - 20;
-    int y = sh - height_ - 60;
 
     hwnd_ = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
-        OVERLAY_CLASS, L"VIM Status",
-        WS_POPUP,
-        x, y, width_, height_,
+        CLASS_NAME, L"", WS_POPUP,
+        sw - WIN_W - 30, sh - WIN_H - 80, WIN_W, WIN_H,
         nullptr, nullptr, hinst, this);
 
-    if (!hwnd_) return false;
-
-    SetLayeredWindowAttributes(hwnd_, 0, 200, LWA_ALPHA); // 80% opacity
-
-    // Create fonts
-    hfont_ = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                         DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
-
-    hfont_big_ = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                             DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
-
-    spdlog::info("OverlayWindow created at {},{} ({}x{})", x, y, width_, height_);
+    if (!hwnd_) {
+        spdlog::error("Overlay: CreateWindowExW failed");
+        return false;
+    }
+    SetLayeredWindowAttributes(hwnd_, RGB(0,0,0), 0, LWA_COLORKEY);
+    spdlog::info("Overlay: window created {}x{}", WIN_W, WIN_H);
     return true;
 }
 
 void OverlayWindow::destroy() {
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
-    if (hfont_) { DeleteObject(hfont_); hfont_ = nullptr; }
-    if (hfont_big_) { DeleteObject(hfont_big_); hfont_big_ = nullptr; }
+    if (gdiplus_token_) { GdiplusShutdown(gdiplus_token_); gdiplus_token_ = 0; }
 }
 
 void OverlayWindow::show_recording() {
-    std::lock_guard<std::mutex> lock(text_mutex_);
-    status_line_ = L"🎤 正在录音...";
-    asr_line_.clear();
-    output_line_.clear();
-    visible_.store(true);
-    ShowWindow(hwnd_, SW_SHOW);
-    InvalidateRect(hwnd_, nullptr, TRUE);
+    hide_generation_++; // cancel any pending hide
+    state_ = 1; ShowWindow(hwnd_, SW_SHOW); InvalidateRect(hwnd_, nullptr, FALSE);
 }
-
-void OverlayWindow::show_processing(const std::string& text) {
-    std::lock_guard<std::mutex> lock(text_mutex_);
-    status_line_ = L"⏳ 处理中...";
-    asr_line_ = utf8_to_wide(text);
-    visible_.store(true);
-    ShowWindow(hwnd_, SW_SHOW);
-    InvalidateRect(hwnd_, nullptr, TRUE);
+void OverlayWindow::show_processing(const std::string&) {
+    state_ = 2; InvalidateRect(hwnd_, nullptr, FALSE);
 }
-
-void OverlayWindow::show_result(const std::string& text) {
-    std::lock_guard<std::mutex> lock(text_mutex_);
-    status_line_ = L"✅ 已完成";
-    output_line_ = utf8_to_wide(text);
-    visible_.store(true);
-    ShowWindow(hwnd_, SW_SHOW);
-    InvalidateRect(hwnd_, nullptr, TRUE);
-
-    // Auto-hide after 3 seconds
-    std::thread([this]() {
-        Sleep(3000);
-        hide();
+void OverlayWindow::show_result(const std::string&) {
+    state_ = 3; InvalidateRect(hwnd_, nullptr, FALSE);
+    int gen = hide_generation_;
+    std::thread([this, gen]() {
+        Sleep(2000);
+        if (hide_generation_ == gen) hide(); // only hide if no new recording started
     }).detach();
 }
-
 void OverlayWindow::hide() {
-    visible_.store(false);
-    ShowWindow(hwnd_, SW_HIDE);
+    state_ = 0; ShowWindow(hwnd_, SW_HIDE);
 }
-
 void OverlayWindow::set_audio_level(float db) {
-    if (!visible_.load()) return;
-    std::lock_guard<std::mutex> lock(text_mutex_);
-    audio_level_db_ = db;
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    db_ = db;
+    if (state_ == 1) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void OverlayWindow::set_asr_text(const std::string& text) {
-    if (!visible_.load()) return;
-    std::lock_guard<std::mutex> lock(text_mutex_);
-    asr_line_ = utf8_to_wide(text);
-    InvalidateRect(hwnd_, nullptr, TRUE);
+// ─── Paint ─────────────────────────────────────────────
+
+void OverlayWindow::paint(HDC hdc) {
+    RECT rc; GetClientRect(hwnd_, &rc);
+    HBRUSH bg = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(hdc, &rc, bg); DeleteObject(bg);
+
+    Graphics g(hdc);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+
+    int cy = BAR_MAX + DOT_R + PAD; // center y of dots
+    int start_x = PAD + DOT_R;
+
+    if (state_ == 1) {
+        float level = std::max(0.0f, std::min(1.0f, (db_ + 48.0f) / 30.0f));
+        SolidBrush white(Color(240, 255, 255, 255));
+
+        for (int i = 0; i < N_DOTS; ++i) {
+            int cx = start_x + i * (DOT_R*2 + GAP);
+
+            float rf = 0.5f + 1.0f * (float)rand() / RAND_MAX;
+            float target_h = level * rf * BAR_MAX;
+            dot_y_[i] += (target_h - dot_y_[i]) * 0.35f;
+            int h = std::max(DOT_R, (int)dot_y_[i]);
+            int rr = DOT_R;
+
+            // Dot at rest → cylinder when tall
+            if (h <= rr * 2) {
+                g.FillEllipse(&white, cx - rr, cy - rr, rr*2, rr*2);
+            } else {
+                int top = cy - h;
+                g.FillEllipse(&white, cx - rr, top, rr*2, rr*2);
+                g.FillEllipse(&white, cx - rr, top + h - rr*2, rr*2, rr*2);
+                g.FillRectangle(&white, cx - rr, top + rr, rr*2, h - rr*2);
+            }
+        }
+    } else if (state_ == 2) {
+        SolidBrush dim(Color(120, 255, 255, 255));
+        for (int i = 0; i < N_DOTS; ++i) {
+            int cx = start_x + i * (DOT_R*2 + GAP);
+            g.FillEllipse(&dim, cx - DOT_R, cy - DOT_R, DOT_R*2, DOT_R*2);
+        }
+    } else if (state_ == 3) {
+        SolidBrush done(Color(180, 255, 255, 255));
+        for (int i = 0; i < N_DOTS; ++i) {
+            int cx = start_x + i * (DOT_R*2 + GAP);
+            g.FillEllipse(&done, cx - DOT_R, cy - DOT_R, DOT_R*2, DOT_R*2);
+        }
+    }
 }
 
-void OverlayWindow::draw_text(HDC hdc, const std::wstring& text, int y, COLORREF color, int size) {
-    if (text.empty()) return;
-    SetTextColor(hdc, color);
-    SetBkMode(hdc, TRANSPARENT);
-    SelectObject(hdc, size == 22 ? hfont_big_ : hfont_);
-    RECT r{15, y, width_ - 15, y + size + 8};
-    DrawTextW(hdc, text.c_str(), -1, &r, DT_LEFT | DT_TOP | DT_WORD_ELLIPSIS);
-}
+// ─── Window proc ───────────────────────────────────────
 
 LRESULT CALLBACK OverlayWindow::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* self = reinterpret_cast<OverlayWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-
     switch (msg) {
-    case WM_CREATE: {
-        auto* cs = reinterpret_cast<CREATESTRUCT*>(lp);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    case WM_CREATE:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+            reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCT*>(lp)->lpCreateParams));
         return 0;
-    }
     case WM_PAINT: {
-        if (!self) return 0;
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-
-        // Background
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        HBRUSH bg = CreateSolidBrush(self->bg_color_);
-        FillRect(hdc, &rc, bg);
-        DeleteObject(bg);
-
-        // Round rect border
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(80, 80, 80));
-        SelectObject(hdc, pen);
-        SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        RoundRect(hdc, rc.left + 3, rc.top + 3, rc.right - 3, rc.bottom - 3, 12, 12);
-        DeleteObject(pen);
-
-        std::lock_guard<std::mutex> lock(self->text_mutex_);
-        self->draw_text(hdc, self->status_line_, 12, RGB(255, 255, 255), 22);
-
-        // VU meter: 8 thin bars, bottom of window
-        float db = self->audio_level_db_;
-        int bar_x = 15, bar_y = self->height_ - 30, bar_w = 34, bar_h = 16, gap = 5;
-        for (int i = 0; i < 8; ++i) {
-            float threshold = -48.0f + i * 5.0f; // -48 to -13 dB range
-            COLORREF color;
-            if (db > threshold) {
-                if (i < 4)      color = RGB(0, 200, 80);       // green
-                else if (i < 6) color = RGB(220, 180, 0);      // yellow
-                else            color = RGB(220, 50, 50);       // red
-            } else {
-                color = RGB(45, 45, 45); // dark inactive
-            }
-            HBRUSH b = CreateSolidBrush(color);
-            RECT br{bar_x + i * (bar_w + gap), bar_y, bar_x + i * (bar_w + gap) + bar_w, bar_y + bar_h};
-            FillRect(hdc, &br, b);
-            DeleteObject(b);
-        }
-
-        if (!self->asr_line_.empty())
-            self->draw_text(hdc, L"📝 " + self->asr_line_, 48, RGB(180, 180, 180), 16);
-        if (!self->output_line_.empty())
-            self->draw_text(hdc, L"📋 " + self->output_line_, 100, RGB(100, 200, 100), 16);
-
-        EndPaint(hwnd, &ps);
-        return 0;
+        PAINTSTRUCT ps; HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+        // Double-buffer to eliminate flicker
+        HDC memDC = CreateCompatibleDC(hdc);
+        HBITMAP memBmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+        HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
+        if (self) self->paint(memDC);
+        BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
+        SelectObject(memDC, oldBmp);
+        DeleteObject(memBmp);
+        DeleteDC(memDC);
+        EndPaint(hwnd, &ps); return 0;
     }
-    case WM_DESTROY:
-        return 0;
+    case WM_ERASEBKGND: return 1;
+    case WM_DESTROY: return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
