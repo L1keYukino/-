@@ -17,7 +17,7 @@
   "audio": {
     "backend": "portaudio",
     "channels": 1,
-    "device_id": "58",
+    "device_id": "",
     "frame_duration_ms": 30,
     "ring_buffer_size_ms": 2000,
     "sample_rate": 48000

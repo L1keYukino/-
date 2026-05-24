@@ -8,7 +8,7 @@ namespace vim {
 
 struct SD {
     EngineConfig* cfg;
-    HWND hApiKey, hShowViz;
+    HWND hApiKey, hShowViz, hMic;
     HWND hPttDisp, hPttBtn, hModeDisp, hModeBtn;
     uint32_t ptt_m=3, ptt_v=0x56, mode_m=3, mode_v='B';
     int rec=0; bool saved=false, viz=true;
@@ -44,6 +44,17 @@ static LRESULT CALLBACK wp(HWND h,UINT m,WPARAM w,LPARAM l){
         d->hApiKey=CreateWindowW(L"EDIT",L"",WS_CHILD|WS_VISIBLE|WS_BORDER|ES_LEFT,x,y+18,340,22,h,nullptr,hi,nullptr);
         {std::wstring w(d->cfg->llm_fallback.api_key.begin(),d->cfg->llm_fallback.api_key.end());SetWindowTextW(d->hApiKey,w.c_str());}
         y+=50;
+        // Mic device
+        CreateWindowW(L"STATIC",L"麦克风设备(重启生效):",WS_CHILD|WS_VISIBLE,x,y,160,20,h,nullptr,hi,nullptr);
+        d->hMic=CreateWindowW(L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,x,y+18,340,200,h,nullptr,hi,nullptr);
+        SendMessageW(d->hMic,CB_ADDSTRING,0,(LPARAM)L"默认设备");
+        SendMessageW(d->hMic,CB_ADDSTRING,0,(LPARAM)L"HECATE G6 PRO (44.1k, device 1)");
+        SendMessageW(d->hMic,CB_ADDSTRING,0,(LPARAM)L"HECATE G6 PRO (48k mono, device 58)");
+        SendMessageW(d->hMic,CB_ADDSTRING,0,(LPARAM)L"Realtek Audio (device 3)");
+        SendMessageW(d->hMic,CB_ADDSTRING,0,(LPARAM)L"Realtek 麦克风阵列 (device 31)");
+        SendMessageW(d->hMic,CB_ADDSTRING,0,(LPARAM)L"立体声混音 (device 36)");
+        SendMessageW(d->hMic,CB_SETCURSEL,0,0);
+        y+=50;
         // PTT hotkey
         CreateWindowW(L"STATIC",L"录音快捷键:",WS_CHILD|WS_VISIBLE,x,y,80,20,h,nullptr,hi,nullptr);
         d->hPttDisp=CreateWindowW(L"STATIC",hk_name(d->ptt_m,d->ptt_v).c_str(),WS_CHILD|WS_VISIBLE|SS_CENTER,100,y,150,22,h,nullptr,hi,nullptr);
@@ -64,7 +75,15 @@ static LRESULT CALLBACK wp(HWND h,UINT m,WPARAM w,LPARAM l){
         return 0;
     }
     case WM_COMMAND:
-        if(LOWORD(w)==1){wchar_t b[256];GetWindowTextW(d->hApiKey,b,256);std::wstring w(b);d->cfg->llm_fallback.api_key=std::string(w.begin(),w.end());d->cfg->llm_fallback.enabled=!d->cfg->llm_fallback.api_key.empty();d->cfg->mode.ptt_hotkey.modifiers=d->ptt_m;d->cfg->mode.ptt_hotkey.virtual_key=d->ptt_v;d->cfg->mode.mode_hotkey.modifiers=d->mode_m;d->cfg->mode.mode_hotkey.virtual_key=d->mode_v;bool vz=SendMessageW(d->hShowViz,BM_GETCHECK,0,0)==BST_CHECKED;{std::ofstream f("config/show_viz.txt");if(f)f<<(vz?"1":"0");}d->saved=true;DestroyWindow(h);return 0;}
+        if(LOWORD(w)==1){
+            wchar_t b[256];GetWindowTextW(d->hApiKey,b,256);std::wstring w(b);d->cfg->llm_fallback.api_key=std::string(w.begin(),w.end());d->cfg->llm_fallback.enabled=!d->cfg->llm_fallback.api_key.empty();
+            d->cfg->mode.ptt_hotkey.modifiers=d->ptt_m;d->cfg->mode.ptt_hotkey.virtual_key=d->ptt_v;
+            d->cfg->mode.mode_hotkey.modifiers=d->mode_m;d->cfg->mode.mode_hotkey.virtual_key=d->mode_v;
+            int mic=static_cast<int>(SendMessageW(d->hMic,CB_GETCURSEL,0,0));
+            const char* devs[]={"","1","58","3","31","36"};
+            if(mic>=0&&mic<6)d->cfg->audio.device_id=devs[mic];
+            bool vz=SendMessageW(d->hShowViz,BM_GETCHECK,0,0)==BST_CHECKED;{std::ofstream f("config/show_viz.txt");if(f)f<<(vz?"1":"0");}
+            d->saved=true;DestroyWindow(h);return 0;}
         if(LOWORD(w)==2){DestroyWindow(h);return 0;}
         if(LOWORD(w)==3){d->rec=1;SetWindowTextW(d->hPttBtn,L"...");EnableWindow(d->hPttBtn,FALSE);SetFocus(h);SetTimer(h,1,5000,nullptr);return 0;}
         if(LOWORD(w)==5){d->rec=2;SetWindowTextW(d->hModeBtn,L"...");EnableWindow(d->hModeBtn,FALSE);SetFocus(h);SetTimer(h,1,5000,nullptr);return 0;}
@@ -82,7 +101,7 @@ bool show_settings_dialog(HINSTANCE hi, HWND parent, HWND, EngineConfig& cfg){
     d.mode_m=cfg.mode.mode_hotkey.modifiers;d.mode_v=cfg.mode.mode_hotkey.virtual_key;
     {std::ifstream f("config/show_viz.txt");if(f){char c;f>>c;d.viz=(c=='1');}}
     WNDCLASSEXW wc{};wc.cbSize=sizeof(wc);wc.lpfnWndProc=wp;wc.hInstance=hi;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);wc.lpszClassName=L"VIM_Settings";RegisterClassExW(&wc);
-    HWND hw=CreateWindowExW(WS_EX_DLGMODALFRAME,L"VIM_Settings",L"语音输入法 - 设置",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,CW_USEDEFAULT,CW_USEDEFAULT,390,300,parent,nullptr,hi,&d);
+    HWND hw=CreateWindowExW(WS_EX_DLGMODALFRAME,L"VIM_Settings",L"语音输入法 - 设置",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,CW_USEDEFAULT,CW_USEDEFAULT,390,350,parent,nullptr,hi,&d);
     MSG msg;while(GetMessageW(&msg,nullptr,0,0)){TranslateMessage(&msg);DispatchMessageW(&msg);}
     if(d.saved){try{save_config_to_file("config/default_config.json",cfg);spdlog::info("Settings saved");return true;}catch(...){spdlog::error("Failed to save config");}}
     return false;
