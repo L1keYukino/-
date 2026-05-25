@@ -1,3 +1,6 @@
+# 演示视频在云盘，链接：
+https://cloud.189.cn/t/IzEFZrqqquIz（访问码：t4ww）
+
 # 语音输入法
 
 基于 LLM 的智能语音输入法。SenseVoice 本地 ASR + DeepSeek 云端 LLM，支持双模式切换。
